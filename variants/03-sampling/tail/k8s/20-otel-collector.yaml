@@ -1,0 +1,137 @@
+# OTel collector for the 03-tail-sampling variant. Unlike head sampling, the
+# apps export EVERY span; the decision is made HERE, once the collector has
+# buffered the whole trace and can see how it turned out.
+#
+# Keep policy (a trace is kept if it matches ANY policy — tail_sampling is OR):
+#   - keep-errors        : any span with status ERROR                (100%)
+#   - keep-slow          : trace latency over 250 ms                 (100%)
+#   - keep-non-approved  : insurance.decision in {Rejected,Referred} (100%)
+#   - sample-routine     : everything else                           (~10%)
+# So the business-interesting wide events are kept in full, and the routine
+# "Approved" traffic is thinned to ~10%. Kept traces go to the tail_sampling
+# ClickHouse database.
+#
+# Requirements this relies on: a SINGLE collector replica (all spans of a trace
+# must reach the same instance) — replicas is 1 below. tail_sampling only acts
+# on TRACES; the logs and metrics pipelines are untouched (not sampled).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: 03-tail-sampling
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # Buffers each trace, waits decision_wait for late spans, then applies the
+      # policies. num_traces / expected_new_traces_per_sec size the buffer.
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 50000
+        expected_new_traces_per_sec: 100
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-slow
+            type: latency
+            latency:
+              threshold_ms: 250
+          - name: keep-non-approved
+            type: string_attribute
+            string_attribute:
+              key: insurance.decision
+              values: [Rejected, Referred]
+          - name: sample-routine
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: 10
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+
+    exporters:
+      debug:
+        verbosity: normal
+      clickhouse:
+        endpoint: tcp://otel:otelpass@host.docker.internal:9000?dial_timeout=10s&compress=lz4
+        database: tail_sampling
+        logs_table_name: otel_logs
+        traces_table_name: otel_traces
+        metrics_table_name: otel_metrics
+        create_schema: true
+        timeout: 10s
+        retry_on_failure:
+          enabled: true
+
+    service:
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [tail_sampling, batch]
+          exporters: [debug, clickhouse]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug, clickhouse]
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [clickhouse]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: 03-tail-sampling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.146.1
+          args: ["--config=/conf/otel-collector-config.yaml"]
+          ports:
+            - containerPort: 4317
+            - containerPort: 4318
+          volumeMounts:
+            - name: config-volume
+              mountPath: /conf
+      volumes:
+        - name: config-volume
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: 03-tail-sampling
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318

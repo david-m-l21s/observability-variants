@@ -1,0 +1,147 @@
+# OTel collector for the 04-spanmetrics-alerting variant.
+#
+# Same lean pipeline as the baseline, PLUS the `spanmetrics` connector. The
+# connector reads the span stream and produces two metrics:
+#   - calls     (a counter, one increment per span)     -> otel_metrics_sum
+#   - duration  (a histogram of span durations)          -> otel_metrics_histogram
+# keyed by service.name, span.name, span.kind, status.code, and the extra
+# business dimension insurance.decision. Those pre-aggregated numbers are what
+# Grafana alerts on (cheap, repeatable, and — because the connector sits BEFORE
+# any sampling — complete). The raw spans are still exported too, so the p95
+# latency rule and any investigation can query otel_traces directly.
+#
+# DELTA temporality is deliberate: each exported point is the count IN that
+# interval, so a windowed ClickHouse query is a plain sum(Value) over the last N
+# minutes — no counter-delta math. Everything (traces, logs, metrics incl.
+# spanmetrics) lands in the ClickHouse database `spanmetrics_alerting`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: 04-spanmetrics-alerting
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    connectors:
+      spanmetrics:
+        # Metric names stay 'calls' and 'duration' (no namespace prefix).
+        histogram:
+          explicit:
+            buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s]
+        # Extra span attributes to keep as metric dimensions. Keep this list
+        # SHORT — every added key multiplies the number of stored series.
+        # insurance.decision has 3 values (Approved/Rejected/Referred): safe,
+        # and it powers the rejection-rate alert. Do NOT add quote_id/customer_id.
+        dimensions:
+          - name: insurance.decision
+        exemplars:
+          enabled: true
+        # DELTA so ClickHouse windowed sums are trivial (see header note).
+        aggregation_temporality: AGGREGATION_TEMPORALITY_DELTA
+        metrics_flush_interval: 15s
+
+    processors:
+      # Drop health/readiness-probe spans BEFORE they are stored or turned into
+      # spanmetrics. The probe hits /healthz every ~10s on every service; left in,
+      # those healthy, trivially-fast calls pad the error-rate/rejection-rate
+      # denominators, drag p95 down, and keep the no-traffic count above zero —
+      # i.e. they hide real problems. This runs before the spanmetrics connector
+      # (a traces-pipeline exporter), so it cleans metrics and stored spans at once.
+      filter/drop_health:
+        error_mode: ignore
+        traces:
+          span:
+            - 'IsMatch(name, ".*healthz.*")'
+            - 'attributes["url.path"] == "/healthz"'
+            - 'attributes["http.route"] == "/healthz"'
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+
+    exporters:
+      debug:
+        verbosity: normal
+      clickhouse:
+        endpoint: tcp://otel:otelpass@host.docker.internal:9000?dial_timeout=10s&compress=lz4
+        database: spanmetrics_alerting
+        logs_table_name: otel_logs
+        traces_table_name: otel_traces
+        metrics_table_name: otel_metrics
+        create_schema: true
+        timeout: 10s
+        retry_on_failure:
+          enabled: true
+
+    service:
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        # Spans go to ClickHouse AND into the spanmetrics connector.
+        # filter/drop_health runs first so probe spans reach neither.
+        traces:
+          receivers: [otlp]
+          processors: [filter/drop_health, batch]
+          exporters: [debug, clickhouse, spanmetrics]
+        # Metrics = whatever the apps emit (otlp) PLUS the spanmetrics output.
+        metrics:
+          receivers: [otlp, spanmetrics]
+          processors: [batch]
+          exporters: [clickhouse]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug, clickhouse]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: 04-spanmetrics-alerting
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.146.1
+          args: ["--config=/conf/otel-collector-config.yaml"]
+          ports:
+            - containerPort: 4317
+            - containerPort: 4318
+          volumeMounts:
+            - name: config-volume
+              mountPath: /conf
+      volumes:
+        - name: config-volume
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: 04-spanmetrics-alerting
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318

@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rating-api
+  namespace: 01-simple-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rating-api
+  template:
+    metadata:
+      labels:
+        app: rating-api
+    spec:
+      containers:
+        - name: rating-api
+          image: rating-api:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.namespace.name=01-simple-apps,k8s.pod.name=$(POD_NAME)"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rating-api
+  namespace: 01-simple-apps
+spec:
+  selector:
+    app: rating-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

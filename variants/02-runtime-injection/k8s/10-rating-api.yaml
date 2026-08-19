@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rating-api
+  namespace: 02-runtime-injection
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rating-api
+  template:
+    metadata:
+      labels:
+        app: rating-api
+      annotations:
+        # Opt this pod into runtime .NET auto-instrumentation using the
+        # `runtime-injection` Instrumentation CR in this namespace.
+        instrumentation.opentelemetry.io/inject-dotnet: "runtime-injection"
+    spec:
+      containers:
+        - name: rating-api
+          image: rating-api-ri:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            # Endpoint/protocol come from the injected agent (Instrumentation CR).
+            - name: OTEL_SERVICE_NAME
+              value: "rating-api"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rating-api
+  namespace: 02-runtime-injection
+spec:
+  selector:
+    app: rating-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -1,0 +1,152 @@
+# A tiny, self-contained alert sink so the demo needs no external account.
+# Grafana's contact point posts fired alerts to http://alert-webhook:8080/alert.
+# This service stores them in memory and shows them on a web page that refreshes
+# every 5s, so you can watch an alert appear live in a workshop. Pure Python
+# standard library, run from a stock python image — no image build required.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-webhook-code
+  namespace: 04-spanmetrics-alerting
+data:
+  webhook.py: |
+    import json, html, datetime
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    ALERTS = []  # most-recent first, capped
+
+    PAGE_HEAD = """<!doctype html>
+    <html><head><meta charset='utf-8'>
+    <meta http-equiv='refresh' content='5'>
+    <title>Alert webhook stub</title>
+    <style>
+      body{font-family:sans-serif;max-width:900px;margin:30px auto;color:#222}
+      h2{margin-bottom:4px}
+      .sub{color:#666;margin-top:0}
+      .card{border-left:6px solid #999;background:#f6f6f6;padding:10px 14px;margin:10px 0;border-radius:4px}
+      .firing{border-color:#c0392b;background:#fdecea}
+      .resolved{border-color:#27ae60;background:#eafaf1}
+      .name{font-weight:600;font-size:15px}
+      .labels{color:#555;font-size:13px;margin-top:4px}
+      .val{font-family:monospace;font-size:13px;margin-top:4px}
+      .time{color:#888;font-size:12px;margin-top:4px}
+      .empty{color:#888;font-style:italic}
+    </style></head><body>
+    <h2>Alert webhook stub</h2>
+    <p class='sub'>Fired alerts land here. Page refreshes every 5s. Newest first.</p>
+    """
+    PAGE_FOOT = "</body></html>"
+
+    def render_rows():
+        if not ALERTS:
+            return "<p class='empty'>No alerts received yet.</p>"
+        out = []
+        for a in ALERTS:
+            status = a.get('status', '')
+            cls = 'firing' if status == 'firing' else 'resolved'
+            labels = a.get('labels', {}) or {}
+            name = labels.get('alertname', '(unnamed)')
+            team = labels.get('team', '')
+            lbl = ', '.join("%s=%s" % (k, v) for k, v in labels.items() if k != 'alertname')
+            val = a.get('valueString', '')
+            starts = a.get('startsAt', '')
+            received = a.get('_received', '')
+            badge = 'FIRING' if status == 'firing' else 'RESOLVED'
+            out.append(
+                "<div class='card %s'>" % cls +
+                "<div class='name'>[%s] %s</div>" % (html.escape(badge), html.escape(name)) +
+                (("<div class='labels'>routed to team: %s</div>" % html.escape(team)) if team else "") +
+                "<div class='labels'>%s</div>" % html.escape(lbl) +
+                (("<div class='val'>%s</div>" % html.escape(val)) if val else "") +
+                "<div class='time'>starts %s &middot; received %s</div>" % (html.escape(starts), html.escape(received)) +
+                "</div>"
+            )
+        return "\n".join(out)
+
+    class H(BaseHTTPRequestHandler):
+        def _send(self, code, body, ctype='text/html'):
+            b = body.encode('utf-8')
+            self.send_response(code)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            if self.path.startswith('/healthz'):
+                self._send(200, 'ok', 'text/plain'); return
+            if self.path.startswith('/alerts.json'):
+                self._send(200, json.dumps(ALERTS, indent=2), 'application/json'); return
+            self._send(200, PAGE_HEAD + render_rows() + PAGE_FOOT)
+
+        def do_POST(self):
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(length) if length else b''
+            now = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%SZ')
+            try:
+                payload = json.loads(raw.decode('utf-8')) if raw else {}
+            except Exception:
+                payload = {}
+            alerts = payload.get('alerts') or [payload]
+            for a in alerts:
+                a['_received'] = now
+                ALERTS.insert(0, a)
+                print('ALERT %s status=%s name=%s' % (
+                    now, a.get('status', ''), (a.get('labels') or {}).get('alertname', '')), flush=True)
+            del ALERTS[200:]
+            self._send(200, 'received', 'text/plain')
+
+        def log_message(self, *args):
+            return
+
+    if __name__ == '__main__':
+        print('alert-webhook listening on :8080', flush=True)
+        ThreadingHTTPServer(('0.0.0.0', 8080), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-webhook
+  namespace: 04-spanmetrics-alerting
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alert-webhook
+  template:
+    metadata:
+      labels:
+        app: alert-webhook
+    spec:
+      containers:
+        - name: alert-webhook
+          image: python:3.12-slim
+          command: ["python", "/app/webhook.py"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: code
+              mountPath: /app
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: code
+          configMap:
+            name: alert-webhook-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-webhook
+  namespace: 04-spanmetrics-alerting
+spec:
+  selector:
+    app: alert-webhook
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

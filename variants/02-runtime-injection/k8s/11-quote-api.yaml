@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quote-api
+  namespace: 02-runtime-injection
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quote-api
+  template:
+    metadata:
+      labels:
+        app: quote-api
+      annotations:
+        instrumentation.opentelemetry.io/inject-dotnet: "runtime-injection"
+    spec:
+      containers:
+        - name: quote-api
+          image: quote-api-ri:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: "quote-api"
+            - name: Services__RatingBaseUrl
+              value: "http://rating-api:8080"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quote-api
+  namespace: 02-runtime-injection
+spec:
+  selector:
+    app: quote-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quote-web
+  namespace: 02-runtime-injection
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quote-web
+  template:
+    metadata:
+      labels:
+        app: quote-web
+      annotations:
+        instrumentation.opentelemetry.io/inject-dotnet: "runtime-injection"
+    spec:
+      containers:
+        - name: quote-web
+          image: quote-web-ri:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: "quote-web"
+            - name: Services__QuoteBaseUrl
+              value: "http://quote-api:8080"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quote-web
+  namespace: 02-runtime-injection
+spec:
+  selector:
+    app: quote-web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

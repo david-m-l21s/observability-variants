@@ -1,0 +1,322 @@
+# A small Grafana that lives IN the cluster, dedicated to this variant.
+#
+# Why in-cluster and not the Lima VM Grafana: the alert path must reach BOTH
+# ClickHouse and the in-cluster webhook stub. From inside the cluster that is one
+# clean direction — ClickHouse via host.docker.internal (the same path the
+# collector already uses) and the stub via normal service DNS. Wiring the
+# off-cluster VM Grafana back into the cluster would be the fragile direction.
+#
+# Everything is provisioned from config: the ClickHouse datasource, the contact
+# point (the webhook stub), the notification policy, and the alert rules. Nothing
+# is clicked by hand, so the whole alerting setup is reproducible and reviewable.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: 04-spanmetrics-alerting
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: ClickHouse-SMA
+        uid: clickhouse-sma
+        type: grafana-clickhouse-datasource
+        access: proxy
+        isDefault: true
+        editable: true
+        jsonData:
+          host: host.docker.internal
+          port: 9000
+          protocol: native
+          username: otel
+          defaultDatabase: spanmetrics_alerting
+        secureJsonData:
+          password: otelpass
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alerting
+  namespace: 04-spanmetrics-alerting
+data:
+  contactpoints.yaml: |
+    apiVersion: 1
+    contactPoints:
+      - orgId: 1
+        name: webhook-stub
+        receivers:
+          - uid: webhook-stub-rcv
+            type: webhook
+            settings:
+              url: http://alert-webhook:8080/alert
+              httpMethod: POST
+  policies.yaml: |
+    apiVersion: 1
+    policies:
+      - orgId: 1
+        receiver: webhook-stub
+        group_by: ['alertname', 'service']
+        group_wait: 10s
+        group_interval: 30s
+        repeat_interval: 2m
+  rules.yaml: |
+    apiVersion: 1
+    groups:
+      - orgId: 1
+        name: spanmetrics-alerts
+        folder: Alerts
+        interval: 1m
+        rules:
+          # 1) Error rate per service, from spanmetrics `calls`. One grouped rule
+          #    -> one alert instance per service (and per future service).
+          - uid: sma-error-rate
+            title: Service error rate high
+            condition: C
+            for: 1m
+            noDataState: NoData
+            execErrState: Error
+            labels:
+              team: quote-vertical
+              severity: page
+            annotations:
+              summary: "Error rate over 20% in the last 5m (spanmetrics calls)"
+            data:
+              - refId: A
+                relativeTimeRange: { from: 300, to: 0 }
+                datasourceUid: clickhouse-sma
+                model:
+                  refId: A
+                  datasource: { type: grafana-clickhouse-datasource, uid: clickhouse-sma }
+                  queryType: table
+                  format: 1
+                  rawSql: |
+                    SELECT ServiceName AS service,
+                           sumIf(Value, Attributes['status.code'] = 'STATUS_CODE_ERROR')
+                             / nullIf(sum(Value), 0) AS error_rate
+                    FROM spanmetrics_alerting.otel_metrics_sum
+                    WHERE MetricName = 'traces.span.metrics.calls'
+                      AND TimeUnix > now() - INTERVAL 5 MINUTE
+                    GROUP BY service
+                    HAVING sum(Value) > 0
+              - refId: B
+                datasourceUid: __expr__
+                model:
+                  refId: B
+                  type: reduce
+                  datasource: { type: __expr__, uid: __expr__ }
+                  reducer: last
+                  expression: A
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  refId: C
+                  type: threshold
+                  datasource: { type: __expr__, uid: __expr__ }
+                  expression: B
+                  conditions:
+                    - evaluator: { type: gt, params: [0.2] }
+
+          # 2) Business alert: share of Rejected quotes. Only possible because
+          #    insurance.decision is a spanmetrics dimension.
+          - uid: sma-rejection-rate
+            title: Quote rejection rate spike
+            condition: C
+            for: 2m
+            noDataState: NoData
+            execErrState: Error
+            labels:
+              team: fraud-risk
+              severity: ticket
+            annotations:
+              summary: "Rejected share of quotes over 30% in the last 5m"
+            data:
+              - refId: A
+                relativeTimeRange: { from: 300, to: 0 }
+                datasourceUid: clickhouse-sma
+                model:
+                  refId: A
+                  datasource: { type: grafana-clickhouse-datasource, uid: clickhouse-sma }
+                  queryType: table
+                  format: 1
+                  rawSql: |
+                    SELECT sumIf(Value, Attributes['insurance.decision'] = 'Rejected')
+                             / nullIf(sum(Value), 0) AS rejection_rate
+                    FROM spanmetrics_alerting.otel_metrics_sum
+                    WHERE MetricName = 'traces.span.metrics.calls'
+                      AND ServiceName = 'quote-api'
+                      AND TimeUnix > now() - INTERVAL 5 MINUTE
+                    HAVING sum(Value) > 0
+              - refId: B
+                datasourceUid: __expr__
+                model:
+                  refId: B
+                  type: reduce
+                  datasource: { type: __expr__, uid: __expr__ }
+                  reducer: last
+                  expression: A
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  refId: C
+                  type: threshold
+                  datasource: { type: __expr__, uid: __expr__ }
+                  expression: B
+                  conditions:
+                    - evaluator: { type: gt, params: [0.3] }
+
+          # 3) Latency SLO from RAW spans (the deliberate hybrid: p95 is simpler
+          #    over the Duration column than over a histogram metric).
+          - uid: sma-latency-p95
+            title: Quote p95 latency high
+            condition: C
+            for: 2m
+            noDataState: NoData
+            execErrState: Error
+            labels:
+              team: quote-vertical
+              severity: page
+            annotations:
+              summary: "quote-api p95 latency over 500ms in the last 5m (raw spans)"
+            data:
+              - refId: A
+                relativeTimeRange: { from: 300, to: 0 }
+                datasourceUid: clickhouse-sma
+                model:
+                  refId: A
+                  datasource: { type: grafana-clickhouse-datasource, uid: clickhouse-sma }
+                  queryType: table
+                  format: 1
+                  rawSql: |
+                    SELECT ServiceName AS service,
+                           quantile(0.95)(Duration) / 1e6 AS p95_ms
+                    FROM spanmetrics_alerting.otel_traces
+                    WHERE ServiceName = 'quote-api'
+                      AND SpanKind = 'Server'
+                      AND Timestamp > now() - INTERVAL 5 MINUTE
+                    GROUP BY service
+              - refId: B
+                datasourceUid: __expr__
+                model:
+                  refId: B
+                  type: reduce
+                  datasource: { type: __expr__, uid: __expr__ }
+                  reducer: last
+                  expression: A
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  refId: C
+                  type: threshold
+                  datasource: { type: __expr__, uid: __expr__ }
+                  expression: B
+                  conditions:
+                    - evaluator: { type: gt, params: [500] }
+
+          # 4) Dead-man's switch: no quotes reaching the frontend. Fires on an
+          #    empty result too (noDataState: Alerting), which is the point.
+          - uid: sma-no-traffic
+            title: No quote traffic
+            condition: C
+            for: 2m
+            noDataState: Alerting
+            execErrState: Error
+            labels:
+              team: platform
+              severity: page
+            annotations:
+              summary: "No quote-web spans in the last 2m — funnel may be down"
+            data:
+              - refId: A
+                relativeTimeRange: { from: 120, to: 0 }
+                datasourceUid: clickhouse-sma
+                model:
+                  refId: A
+                  datasource: { type: grafana-clickhouse-datasource, uid: clickhouse-sma }
+                  queryType: table
+                  format: 1
+                  rawSql: |
+                    SELECT count() AS n
+                    FROM spanmetrics_alerting.otel_traces
+                    WHERE ServiceName = 'quote-web'
+                      AND Timestamp > now() - INTERVAL 2 MINUTE
+              - refId: B
+                datasourceUid: __expr__
+                model:
+                  refId: B
+                  type: reduce
+                  datasource: { type: __expr__, uid: __expr__ }
+                  reducer: last
+                  expression: A
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  refId: C
+                  type: threshold
+                  datasource: { type: __expr__, uid: __expr__ }
+                  expression: B
+                  conditions:
+                    - evaluator: { type: lt, params: [1] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: 04-spanmetrics-alerting
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-clickhouse-datasource"
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "admin"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Editor"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: alerting
+              mountPath: /etc/grafana/provisioning/alerting
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: alerting
+          configMap:
+            name: grafana-alerting
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: 04-spanmetrics-alerting
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

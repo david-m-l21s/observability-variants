@@ -1,0 +1,30 @@
+# Instrumentation CR — tells the OTel Operator how to configure the injected .NET
+# agent. MUST exist before the app pods start (the operator's webhook injects at
+# pod creation), so 04-deploy.sh applies this before the Deployments.
+#
+# .NET auto-instrumentation defaults to OTLP http/protobuf, so the endpoint is the
+# collector's HTTP port 4318 (not the gRPC 4317 the v1 apps used).
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: runtime-injection
+  namespace: 02-runtime-injection
+spec:
+  exporter:
+    endpoint: http://otel-collector:4318
+  propagators:
+    - tracecontext
+    - baggage
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+  dotnet:
+    # ARM64 (Apple Silicon) fix. The operator defaults CORECLR_PROFILER_PATH to a
+    # linux-x64 native profiler, which can't load on arm64 kind nodes — the app
+    # then runs uninstrumented and emits nothing. The 1.16.0 agent image ships an
+    # arm64 native library under linux-arm64/, so we point the profiler there.
+    # (The startup hook, additional deps and store are arch-neutral and untouched.)
+    # On an amd64 node, remove this override — the default path is correct there.
+    env:
+      - name: CORECLR_PROFILER_PATH
+        value: /otel-auto-instrumentation-dotnet/linux-arm64/OpenTelemetry.AutoInstrumentation.Native.so

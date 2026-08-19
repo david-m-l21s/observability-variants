@@ -1,0 +1,6 @@
+# Single-node kind cluster for the T2A observability VM test.
+# ClickHouse + Grafana live OFF-cluster on the Lima VM; pods reach them via
+# host.docker.internal:9000 (Docker Desktop -> Mac localhost -> Lima -> VM).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: obs-vm-tests
