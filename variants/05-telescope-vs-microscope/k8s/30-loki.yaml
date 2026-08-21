@@ -1,0 +1,119 @@
+# Loki — the DEBUG store for this variant.
+#
+# Deliberately modest: single binary, filesystem storage on an emptyDir, one
+# replica, 24h retention. It is not meant to be a second observability platform.
+# It is meant to be somewhere else than ClickHouse.
+#
+# What matters for the variant is only this:
+#   - it accepts OTLP directly (/otlp), so the collector needs no translation
+#   - allow_structured_metadata keeps trace_id queryable, which is the ONLY
+#     bridge from the system store to here
+#   - retention_period is short, because nobody reads three-week-old debug logs
+#
+# In T2A this box could just as well be the existing Splunk. The point of the
+# variant is the routing, not the product.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: 05-telescope-vs-microscope
+data:
+  loki-config.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+      log_level: info
+
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    # Retention is what makes "short-lived debug store" true rather than
+    # decorative. Without the compactor block, retention_period is ignored.
+    compactor:
+      working_directory: /loki/compactor
+      delete_request_store: filesystem
+      retention_enabled: true
+      compaction_interval: 10m
+
+    limits_config:
+      # Required so that trace_id and telemetry_tier survive as structured
+      # metadata and stay queryable.
+      allow_structured_metadata: true
+      volume_enabled: true
+      retention_period: 24h
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: 05-telescope-vs-microscope
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+        - name: loki
+          image: grafana/loki:3.0.0
+          args: ["-config.file=/etc/loki/loki-config.yaml"]
+          ports:
+            - containerPort: 3100
+              name: http
+          volumeMounts:
+            - name: loki-config
+              mountPath: /etc/loki
+            - name: loki-storage
+              mountPath: /loki
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+      volumes:
+        - name: loki-config
+          configMap:
+            name: loki-config
+        # emptyDir on purpose: debug logs are disposable. Deleting the pod
+        # throws them away, which is the correct blast radius for this tier.
+        - name: loki-storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: 05-telescope-vs-microscope
+spec:
+  selector:
+    app: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100

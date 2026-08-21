@@ -1,0 +1,875 @@
+# Grafana for the 05-telescope-vs-microscope variant.
+#
+# In-cluster and dedicated to this variant, for the same reason as variant 04:
+# the dashboard has to reach BOTH stores, and from inside the cluster that is one
+# clean direction — ClickHouse via host.docker.internal (the path the collector
+# already uses) and Loki via normal service DNS. The Lima VM Grafana stays
+# untouched.
+#
+# Two datasources, one dashboard, all provisioned from config. Nothing is
+# clicked by hand, so the whole thing is reproducible and reviewable. The
+# dashboard is the demo script: read its top text panel first.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: 05-telescope-vs-microscope
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      # The SYSTEM store — spans plus INFO/WARN/ERROR logs.
+      - name: ClickHouse-TM
+        uid: clickhouse-tm
+        type: grafana-clickhouse-datasource
+        access: proxy
+        isDefault: true
+        editable: true
+        jsonData:
+          host: host.docker.internal
+          port: 9000
+          protocol: native
+          username: otel
+          defaultDatabase: telescope_vs_microscope
+        secureJsonData:
+          password: otelpass
+
+      # The DEBUG store — Debug/Trace and anything marked telemetry.tier=debug.
+      - name: Loki-TM
+        uid: loki-tm
+        type: loki
+        access: proxy
+        editable: true
+        url: http://loki:3100
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: 05-telescope-vs-microscope
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: telescope-vs-microscope
+        orgId: 1
+        folder: Variants
+        type: file
+        disableDeletion: false
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-tm
+  namespace: 05-telescope-vs-microscope
+data:
+  05-telescope-vs-microscope.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": {
+              "type": "grafana",
+              "uid": "-- Grafana --"
+            },
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "links": [],
+      "panels": [
+        {
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "id": 1,
+          "options": {
+            "code": {
+              "language": "plaintext",
+              "showLineNumbers": false,
+              "showMiniMap": false
+            },
+            "content": "### Observability works on systems, not on functions\n\nThe system store (ClickHouse, database `telescope_vs_microscope`) is the **telescope**. It tells you *where*. The debug store (Loki, 24h) is the **microscope**. It tells you *why*. A log record is in exactly one of them — never both.\n\n**1. Notice.** Run `scripts/06-generate-load.sh`, then `scripts/07-trigger-defect.sh break`. *Quote decisions over time* changes shape. Error rate, latency and resource use do not move at all. Every request still answers HTTP 200.\n\n**2. Localize — telescope.** *Rejected share per region* isolates a single region: `suburban`. *Decisions by region and ruleset* shows the second half of the answer: only pods running `quote.ruleset = v2` reject it. Service, dimension and cause-of-change, all from span attributes. No log has been read yet.\n\n**3. Prove the split.** *Log records in ClickHouse by severity* has no `Debug` rows. *Everything that reached Loki* has no unmarked `Information` rows. Run `scripts/08-measure-split.sh` for the same thing as numbers. Then run `scripts/07-trigger-defect.sh flood` to turn on framework debug logging everywhere and watch the ClickHouse log count stay flat while Loki's climbs.\n\n**4. Explain — microscope.** Copy a `trace_id` from *Rejected quotes to investigate* into the `traceId` variable at the top. The panel at the bottom right shows the debug lines for that one request, including which region list the code actually used. From here it is a debugging problem, not an observability problem.\n\nThe only bridge between the two stores is the TraceId.",
+            "mode": "markdown"
+          },
+          "pluginVersion": "11.3.0",
+          "title": "Telescope, then microscope",
+          "type": "text"
+        },
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-tm"
+          },
+          "description": "System tier. insurance.decision is a span attribute, so this is queryable forever and across every service.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 4,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": true,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 9
+          },
+          "id": 2,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "maxHeight": 600,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-tm"
+              },
+              "editorType": "sql",
+              "format": 0,
+              "meta": {
+                "builderOptions": {
+                  "columns": [],
+                  "database": "",
+                  "limit": 1000,
+                  "mode": "list",
+                  "queryType": "table",
+                  "table": ""
+                }
+              },
+              "pluginVersion": "4.15.0",
+              "queryType": "timeseries",
+              "rawSql": "SELECT\n  toStartOfInterval(Timestamp, INTERVAL 15 SECOND) AS time,\n  SpanAttributes['insurance.decision'] AS decision,\n  count() AS amount\nFROM telescope_vs_microscope.otel_traces\nWHERE\n  $__timeFilter(Timestamp)\n  AND ServiceName = 'quote-api'\n  AND SpanAttributes['insurance.decision'] != ''\nGROUP BY time, decision\nORDER BY time ASC;",
+              "refId": "A"
+            }
+          ],
+          "title": "Quote decisions over time",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-tm"
+          },
+          "description": "The telescope step. Localizes the problem to one dimension value without reading a single log line.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 4,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": true,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 9
+          },
+          "id": 3,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "maxHeight": 600,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-tm"
+              },
+              "editorType": "sql",
+              "format": 0,
+              "meta": {
+                "builderOptions": {
+                  "columns": [],
+                  "database": "",
+                  "limit": 1000,
+                  "mode": "list",
+                  "queryType": "table",
+                  "table": ""
+                }
+              },
+              "pluginVersion": "4.15.0",
+              "queryType": "timeseries",
+              "rawSql": "SELECT\n  toStartOfInterval(Timestamp, INTERVAL 15 SECOND) AS time,\n  concat('rejected_share_', SpanAttributes['insurance.region']) AS region,\n  round(100 * countIf(SpanAttributes['insurance.decision'] = 'Rejected') / count(), 1) AS rejected_percent\nFROM telescope_vs_microscope.otel_traces\nWHERE\n  $__timeFilter(Timestamp)\n  AND ServiceName = 'quote-api'\n  AND SpanAttributes['insurance.decision'] != ''\nGROUP BY time, region\nORDER BY time ASC;",
+              "refId": "A"
+            }
+          ],
+          "title": "Rejected share per region over time",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-tm"
+          },
+          "description": "quote.ruleset has two values, so it costs nothing and points straight at the configuration change that caused this.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "rejected_percent"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percent"
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 17
+          },
+          "id": 4,
+          "options": {
+            "cellHeight": "sm",
+            "footer": {
+              "countRows": false,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-tm"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "meta": {
+                "builderOptions": {
+                  "columns": [],
+                  "database": "",
+                  "limit": 1000,
+                  "mode": "list",
+                  "queryType": "table",
+                  "table": ""
+                }
+              },
+              "pluginVersion": "4.15.0",
+              "queryType": "table",
+              "rawSql": "SELECT\n  SpanAttributes['insurance.region'] AS region,\n  SpanAttributes['quote.ruleset'] AS ruleset,\n  countIf(SpanAttributes['insurance.decision'] = 'Approved') AS approved,\n  countIf(SpanAttributes['insurance.decision'] = 'Referred') AS referred,\n  countIf(SpanAttributes['insurance.decision'] = 'Rejected') AS rejected,\n  round(100 * countIf(SpanAttributes['insurance.decision'] = 'Rejected') / count(), 1) AS rejected_percent\nFROM telescope_vs_microscope.otel_traces\nWHERE\n  $__timeFilter(Timestamp)\n  AND ServiceName = 'quote-api'\n  AND SpanAttributes['insurance.decision'] != ''\nGROUP BY region, ruleset\nORDER BY rejected_percent DESC, region ASC;",
+              "refId": "A"
+            }
+          ],
+          "title": "Decisions by region and ruleset",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-tm"
+          },
+          "description": "A rejected quote never reaches rating-api. The defect is visible one service downstream, with no instrumentation there at all.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 4,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": true,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 17
+          },
+          "id": 5,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "maxHeight": 600,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-tm"
+              },
+              "editorType": "sql",
+              "format": 0,
+              "meta": {
+                "builderOptions": {
+                  "columns": [],
+                  "database": "",
+                  "limit": 1000,
+                  "mode": "list",
+                  "queryType": "table",
+                  "table": ""
+                }
+              },
+              "pluginVersion": "4.15.0",
+              "queryType": "timeseries",
+              "rawSql": "SELECT\n  toStartOfInterval(Timestamp, INTERVAL 15 SECOND) AS time,\n  'rating_calls' AS series,\n  count() AS amount\nFROM telescope_vs_microscope.otel_traces\nWHERE\n  $__timeFilter(Timestamp)\n  AND ServiceName = 'rating-api'\n  AND SpanKind = 'Server'\nGROUP BY time, series\nORDER BY time ASC;",
+              "refId": "A"
+            }
+          ],
+          "title": "Rating calls over time (downstream effect)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-tm"
+          },
+          "description": "Proof of the strict split, from the system store's side: no Debug rows ever arrive here.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 25
+          },
+          "id": 6,
+          "options": {
+            "cellHeight": "sm",
+            "footer": {
+              "countRows": false,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-tm"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "meta": {
+                "builderOptions": {
+                  "columns": [],
+                  "database": "",
+                  "limit": 1000,
+                  "mode": "list",
+                  "queryType": "table",
+                  "table": ""
+                }
+              },
+              "pluginVersion": "4.15.0",
+              "queryType": "table",
+              "rawSql": "SELECT\n  SeverityText AS severity,\n  count() AS records_in_clickhouse\nFROM telescope_vs_microscope.otel_logs\nWHERE $__timeFilter(Timestamp)\nGROUP BY severity\nORDER BY records_in_clickhouse DESC;",
+              "refId": "A"
+            }
+          ],
+          "title": "Log records in ClickHouse by severity",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-tm"
+          },
+          "description": "Click a trace_id to load it into the microscope panel below, or paste it into the traceId variable at the top.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "trace_id"
+                },
+                "properties": [
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "targetBlank": false,
+                        "title": "Open this trace in the microscope panel",
+                        "url": "?var-traceId=${__value.raw}"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 16,
+            "x": 8,
+            "y": 25
+          },
+          "id": 7,
+          "options": {
+            "cellHeight": "sm",
+            "footer": {
+              "countRows": false,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-tm"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "meta": {
+                "builderOptions": {
+                  "columns": [],
+                  "database": "",
+                  "limit": 1000,
+                  "mode": "list",
+                  "queryType": "table",
+                  "table": ""
+                }
+              },
+              "pluginVersion": "4.15.0",
+              "queryType": "table",
+              "rawSql": "SELECT\n  Timestamp AS time,\n  TraceId AS trace_id,\n  SpanAttributes['insurance.region'] AS region,\n  SpanAttributes['quote.ruleset'] AS ruleset,\n  SpanAttributes['insurance.driver_age'] AS driver_age,\n  SpanAttributes['insurance.vehicle_type'] AS vehicle_type\nFROM telescope_vs_microscope.otel_traces\nWHERE\n  $__timeFilter(Timestamp)\n  AND ServiceName = 'quote-api'\n  AND SpanAttributes['insurance.decision'] != ''\n  AND SpanAttributes['insurance.decision'] = 'Rejected'\nORDER BY time DESC\nLIMIT 25;",
+              "refId": "A"
+            }
+          ],
+          "title": "Rejected quotes to investigate",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-tm"
+          },
+          "description": "Proof of the split from the debug store's side. Only debug-tier records are here. Note the telemetry_tier label on the marked ones.",
+          "gridPos": {
+            "h": 11,
+            "w": 12,
+            "x": 0,
+            "y": 33
+          },
+          "id": 8,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki-tm"
+              },
+              "editorMode": "code",
+              "expr": "{k8s_namespace_name=\"05-telescope-vs-microscope\"}",
+              "queryType": "range",
+              "refId": "A"
+            }
+          ],
+          "title": "Everything that reached Loki (debug tier)",
+          "type": "logs"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-tm"
+          },
+          "description": "The drill-down. Set the traceId variable above. This is where the code defect becomes readable.",
+          "gridPos": {
+            "h": 11,
+            "w": 12,
+            "x": 12,
+            "y": 33
+          },
+          "id": 9,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki-tm"
+              },
+              "editorMode": "code",
+              "expr": "{k8s_namespace_name=\"05-telescope-vs-microscope\"} | trace_id = \"$traceId\"",
+              "queryType": "range",
+              "refId": "A"
+            }
+          ],
+          "title": "Microscope: Loki debug logs for $traceId",
+          "type": "logs"
+        }
+      ],
+      "refresh": "10s",
+      "schemaVersion": 39,
+      "tags": [
+        "05-telescope-vs-microscope"
+      ],
+      "templating": {
+        "list": [
+          {
+            "current": {
+              "selected": false,
+              "text": "",
+              "value": ""
+            },
+            "description": "Paste a TraceId from 'Rejected quotes to investigate' to open the microscope.",
+            "hide": 0,
+            "label": "traceId",
+            "name": "traceId",
+            "options": [
+              {
+                "selected": true,
+                "text": "",
+                "value": ""
+              }
+            ],
+            "query": "",
+            "skipUrlSync": false,
+            "type": "textbox"
+          }
+        ]
+      },
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "05 Telescope vs. Microscope",
+      "uid": "telescope-vs-microscope",
+      "version": 1,
+      "weekStart": ""
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: 05-telescope-vs-microscope
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-clickhouse-datasource"
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "admin"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Editor"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboard-tm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: 05-telescope-vs-microscope
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

@@ -1,0 +1,177 @@
+# OTel collector for the 05-telescope-vs-microscope variant.
+#
+# The whole variant lives in this file. The baseline has ONE logs pipeline that
+# ships everything to ClickHouse. Here it becomes TWO, and a log record goes to
+# exactly one of them:
+#
+#   logs/system  -> ClickHouse  (database telescope_vs_microscope)
+#                   Statements about the SYSTEM. Kept long. Dashboards query
+#                   this, together with the spans.
+#
+#   logs/debug   -> Loki        (in-cluster, 24h retention)
+#                   Statements about the inside of one function. No dashboard
+#                   ever queries this. The only way in is a TraceId that the
+#                   system store handed you.
+#
+# THE SPLIT IS STRICT. Nothing is written to both. In particular errors are NOT
+# duplicated into the debug store: a system-relevant failure is already visible
+# on the span as StatusCode + StatusMessage, so a second copy in Loki would
+# store the same fact twice.
+#
+# Two axes decide the tier, and the filter conditions below combine them:
+#
+#   1. An explicit marker, attributes["telemetry.tier"] == "debug", set by the
+#      apps via an ILogger scope (see apps/QuoteApi/Program.cs). This is the
+#      primary mechanism, because it says WHO a statement is for.
+#   2. Severity below INFO. This catches everything that carries no marker —
+#      framework and library debug noise — so nothing has to be retrofitted.
+#
+# Note on reading the filter processor: it DROPS the records that match. The
+# blocks below describe what is thrown away, not what is kept. Multiple
+# conditions in one block are OR-ed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: 05-telescope-vs-microscope
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # Drop health/readiness-probe spans before they are stored. The probe hits
+      # /healthz every ~10s on every service; left in, those trivially-fast
+      # calls pad every denominator and drag p95 down, i.e. they hide real
+      # problems. Same rationale as variant 04.
+      filter/drop_health:
+        error_mode: ignore
+        traces:
+          span:
+            - 'IsMatch(name, ".*healthz.*")'
+            - 'attributes["url.path"] == "/healthz"'
+            - 'attributes["http.route"] == "/healthz"'
+
+      # --- the split -----------------------------------------------------
+      # System tier -> ClickHouse. Throw away anything marked as debug tier,
+      # and anything below INFO severity (unmarked framework noise).
+      # What survives: INFO, WARN, ERROR, FATAL without a debug marker.
+      filter/system_tier:
+        error_mode: ignore
+        logs:
+          log_record:
+            - severity_number < SEVERITY_NUMBER_INFO
+            - 'attributes["telemetry.tier"] == "debug"'
+
+      # Debug tier -> Loki. Throw away exactly the complement of the above, so
+      # that every record lands in one store and only one.
+      # A record with no telemetry.tier attribute compares as nil != "debug",
+      # which is true, so unmarked INFO+ records are correctly dropped here.
+      filter/debug_tier:
+        error_mode: ignore
+        logs:
+          log_record:
+            - 'severity_number >= SEVERITY_NUMBER_INFO and attributes["telemetry.tier"] != "debug"'
+
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+
+    exporters:
+      debug:
+        verbosity: normal
+
+      # The system store. Off-cluster ClickHouse on the Lima VM, reached the
+      # same way every other variant reaches it.
+      clickhouse:
+        endpoint: tcp://otel:otelpass@host.docker.internal:9000?dial_timeout=10s&compress=lz4
+        database: telescope_vs_microscope
+        logs_table_name: otel_logs
+        traces_table_name: otel_traces
+        metrics_table_name: otel_metrics
+        create_schema: true
+        timeout: 10s
+        retry_on_failure:
+          enabled: true
+
+      # The debug store. In-cluster, ephemeral, 24h retention (see 30-loki.yaml).
+      # Which product this is matters far less than the fact that it is a
+      # SEPARATE one — Loki here, could be the existing Splunk in T2A.
+      otlphttp/loki:
+        endpoint: http://loki:3100/otlp
+
+    service:
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [filter/drop_health, batch]
+          exporters: [clickhouse]
+
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [clickhouse]
+
+        logs/system:
+          receivers: [otlp]
+          processors: [filter/system_tier, batch]
+          exporters: [clickhouse]
+
+        logs/debug:
+          receivers: [otlp]
+          processors: [filter/debug_tier, batch]
+          exporters: [otlphttp/loki]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: 05-telescope-vs-microscope
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.146.1
+          args: ["--config=/conf/otel-collector-config.yaml"]
+          ports:
+            - containerPort: 4317
+            - containerPort: 4318
+          volumeMounts:
+            - name: config-volume
+              mountPath: /conf
+      volumes:
+        - name: config-volume
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: 05-telescope-vs-microscope
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
