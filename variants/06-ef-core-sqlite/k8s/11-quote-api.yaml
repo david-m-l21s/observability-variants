@@ -1,0 +1,91 @@
+# quote-api for 06-ef-core-sqlite. Differs from the baseline in the image
+# (quote-api-ef:v1: EF Core + SQLite + EF Core instrumentation) and the env
+# block below. Everything else is the baseline manifest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quote-api
+  namespace: 06-ef-core-sqlite
+spec:
+  # Keep at 1. The SQLite database lives in this pod's memory: a second
+  # replica would have its own, separate, empty database, and a quote written
+  # through one pod could not be read through the other.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quote-api
+  template:
+    metadata:
+      labels:
+        app: quote-api
+    spec:
+      containers:
+        - name: quote-api
+          image: quote-api-ef:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.namespace.name=06-ef-core-sqlite,k8s.pod.name=$(POD_NAME)"
+            - name: Services__RatingBaseUrl
+              value: "http://rating-api:8080"
+
+            # --- what this variant is about ---------------------------------
+            # efcore = register AddEntityFrameworkCoreInstrumentation()
+            # none   = baseline wiring only; the DB work is invisible
+            # Flip with: scripts/07-switch.sh none | efcore
+            - name: DB_INSTRUMENTATION
+              value: "efcore"
+
+            # Without this the EF package emits the OLD, pre-1.28 db
+            # conventions: db.system / db.name / db.statement, and every span
+            # is named after the database ("main" for SQLite). With it:
+            # db.system.name / db.namespace / db.query.text /
+            # db.query.summary, and span names like "SELECT quotes".
+            # "database/dup" emits both (migration aid, doubles the width).
+            # Only the "database" token is read here; HTTP conventions are
+            # unaffected. Flip with: scripts/07-switch.sh old-semconv
+            - name: OTEL_SEMCONV_STABILITY_OPT_IN
+              value: "database"
+
+            # NOT set on purpose, and must stay unset for real data:
+            #   OTEL_DOTNET_EXPERIMENTAL_EFCORE_ENABLE_TRACE_DB_QUERY_PARAMETERS
+            # It adds db.query.parameter.<name> = <value> to every span,
+            # i.e. customer ids, ages, premiums in the wide-event store.
+
+            # EF Core logs every executed command at Information level,
+            # category Microsoft.EntityFrameworkCore.Database.Command, with
+            # the SQL text in it. With a span per command that log line is the
+            # same fact stored twice (and in the log table, un-sanitized).
+            # Warning keeps failures, drops the per-command chatter.
+            # Flip with: scripts/07-switch.sh ef-logs
+            - name: Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command
+              value: "Warning"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quote-api
+  namespace: 06-ef-core-sqlite
+spec:
+  selector:
+    app: quote-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!--
+    Variant 06 differs from the baseline in two ways here:
+
+    1. EF Core + SQLite, and the EF Core OpenTelemetry instrumentation.
+    2. ALL OpenTelemetry packages move from 1.9.0 to 1.19.x. Not optional: the
+       EF instrumentation 1.19.1-beta.1 requires
+       OpenTelemetry.Api.ProviderBuilderExtensions >= 1.19.1, and mixing a
+       1.19 API with a 1.9 SDK is asking for runtime surprises. Keep the core
+       packages on one version line.
+
+    The EF Core instrumentation is PRERELEASE (beta). It has been beta for its
+    whole life; that is the main argument for the driver-level packages
+    (SqlClient, Npgsql) once a real database is chosen.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.20" />
+
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.EntityFrameworkCore" Version="1.19.1-beta.1" />
+  </ItemGroup>
+
+</Project>
