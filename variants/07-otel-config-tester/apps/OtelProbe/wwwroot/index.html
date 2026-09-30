@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OtelProbe</title>
+<!--
+  Test page for the probe app (variant 07-otel-config-tester). Served by the
+  app itself at "/", so every button is a real request to the configuration
+  under test. Self-contained: no external scripts or styles.
+  Loading this page is itself two requests (/ and /favicon.ico) and therefore
+  up to two SERVER spans, unless the configuration filters them.
+-->
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--border:#e2e5ea;--text:#1d2330;--muted:#667085;--accent:#3b6fd8;--ok:#1a7f37;--warn:#a15c00;--err:#b42318;--soft:#e8effc}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1216;--panel:#171b21;--border:#2a3039;--text:#e4e7ec;--muted:#98a2b3;--accent:#6c9cf5;--ok:#56d364;--warn:#f5b85a;--err:#f78c80;--soft:#1e2a40}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--border)}
+header h1{font-size:16px;margin:0}
+header .meta{color:var(--muted);font-size:12px}
+header code,td code,.hint code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:12px 16px}
+@media (max-width:1000px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+h2{font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.hint{color:var(--muted);font-size:12px;margin:4px 0 8px}
+button,select,input{font:inherit;color:inherit}
+button{border:1px solid var(--border);background:var(--bg);border-radius:6px;padding:5px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+select,input[type=number]{border:1px solid var(--border);border-radius:6px;padding:4px 6px;background:var(--bg)}
+input[type=number]{width:56px}
+.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px}
+.grid button{text-align:left}
+.grid button small{display:block;color:var(--muted);font-size:11.5px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:3px 6px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.products{max-height:260px;overflow:auto}
+.s2{color:var(--ok)}.s4{color:var(--warn)}.s5,.s0{color:var(--err)}
+.tag{font-size:11px;border-radius:999px;padding:0 7px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.tag.rec{border-color:var(--ok);color:var(--ok)}.tag.norec{border-color:var(--warn);color:var(--warn)}
+#log{grid-column:1/-1}
+#log .wrap{max-height:420px;overflow:auto}
+a{color:var(--accent)}
+.out{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto;background:var(--bg);border-radius:6px;padding:6px;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>OtelProbe</h1>
+  <span class="meta" id="meta">loading /probe/info …</span>
+  <span class="meta">Grafana base: <input id="grafana" value="http://localhost:3003" style="width:180px;border:1px solid var(--border);border-radius:6px;padding:2px 6px;background:var(--bg)"></span>
+  <label class="meta"><input type="checkbox" id="hdrs" checked> send <code>x-tenant-id</code> / <code>x-correlation-id</code> / <code>Authorization</code></label>
+</header>
+<main>
+  <section>
+    <h2>Shop — deep traces</h2>
+    <div class="hint">An order is one trace: validate (custom span + EF SELECT), one pricing call per line in parallel (CLIENT → SERVER → EF SELECT → custom span), reserve stock (UPDATE per line + INSERT), notification (CLIENT → SERVER → INSERT).</div>
+    <div class="row">
+      <label>Customer <select id="customer"></select></label>
+      <button id="loadProducts">Reload products</button>
+      <button id="clearCart">Clear quantities</button>
+      <button class="primary" id="placeOrder">Place order</button>
+      <button id="randomOrder">Random order</button>
+    </div>
+    <div class="products"><table id="products"><thead><tr><th>SKU</th><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th>Qty</th></tr></thead><tbody></tbody></table></div>
+    <div class="row">
+      <button id="lastOrder" disabled>Read last order</button>
+      <button id="history">Customer's orders</button>
+      <span class="hint" id="lastOrderId"></span>
+    </div>
+    <div class="out" id="shopOut">–</div>
+  </section>
+
+  <section>
+    <h2>Scenarios</h2>
+    <div class="hint">One request each (unless noted). What the configuration makes of it is the point.</div>
+    <div class="grid" id="scenarios"></div>
+  </section>
+
+  <section id="log">
+    <h2>Requests from this page</h2>
+    <div class="hint">Trace id comes from the <code>X-Trace-Id</code> response header. <span class="tag rec">recorded</span> = the SERVER span will be exported. <span class="tag norec">not recorded</span> = dropped in the app (Filter or sampling); child spans are dropped with it. No trace id = no server span at all (ASP.NET Core instrumentation off). Spans arrive in ClickHouse after the batch delay (5 s by default) — or press "Flush now".</div>
+    <div class="row"><button id="flush">Flush now (POST /probe/flush)</button><button id="clearLog">Clear list</button></div>
+    <div class="wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Status</th><th>ms</th><th>Trace</th></tr></thead><tbody id="logBody"></tbody></table></div>
+  </section>
+</main>
+<script>
+(function(){
+"use strict";
+const $ = s => document.querySelector(s);
+let runId = "";
+let lastOrderId = "";
+
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function headers(extra){
+  const h = Object.assign({}, extra || {});
+  if ($("#hdrs").checked){
+    h["x-tenant-id"] = "tenant-42";
+    h["x-correlation-id"] = "ui-" + Math.random().toString(16).slice(2, 10);
+    h["Authorization"] = "Bearer ui-secret-token";
+  }
+  return h;
+}
+function grafanaLink(traceId){
+  const base = $("#grafana").value.replace(/\/+$/, "");
+  return `${base}/d/otel-config-tester/otel-config-tester?var-run=${encodeURIComponent(runId)}&var-traceId=${traceId}&from=now-1h&to=now`;
+}
+
+// One request, logged. Returns {status, body}.
+async function call(method, path, body, opts){
+  opts = opts || {};
+  const t0 = performance.now();
+  let status = 0, text = "", traceId = null, recorded = null;
+  try {
+    const r = await fetch(path, {
+      method,
+      headers: headers(body !== undefined ? {"Content-Type": "application/json"} : {}),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    status = r.status;
+    traceId = r.headers.get("X-Trace-Id");
+    recorded = r.headers.get("X-Trace-Recorded");
+    text = await r.text();
+  } catch (e) { text = String(e); }
+  const ms = Math.round(performance.now() - t0);
+  if (!opts.quiet) log(method, path, status, ms, traceId, recorded);
+  let json = null; try { json = JSON.parse(text); } catch (e) {}
+  return {status, body: json ?? text, traceId, recorded};
+}
+
+function log(method, path, status, ms, traceId, recorded){
+  const tr = document.createElement("tr");
+  let trace = '<span class="hint">no server span</span>';
+  if (traceId){
+    const tag = recorded === "true" ? '<span class="tag rec">recorded</span>' : '<span class="tag norec">not recorded</span>';
+    trace = `${tag} <a href="${esc(grafanaLink(traceId))}" target="_blank" rel="noopener"><code>${esc(traceId)}</code></a>`;
+  }
+  tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td><code>${esc(method)} ${esc(path)}</code></td>`
+    + `<td class="s${String(status)[0]}">${status || "error"}</td><td>${ms}</td><td>${trace}</td>`;
+  $("#logBody").prepend(tr);
+}
+
+function show(res){
+  $("#shopOut").textContent = `HTTP ${res.status}\n` + (typeof res.body === "string" ? res.body : JSON.stringify(res.body, null, 2));
+}
+
+// --- shop ---------------------------------------------------------------------
+async function loadProducts(){
+  const res = await call("GET", "/api/products");
+  const tb = $("#products tbody");
+  if (!Array.isArray(res.body)) { tb.innerHTML = `<tr><td colspan="6">HTTP ${res.status}</td></tr>`; return; }
+  const keep = {};
+  tb.querySelectorAll("input").forEach(i => keep[i.dataset.sku] = i.value);
+  tb.innerHTML = res.body.map(p => `<tr><td><code>${esc(p.sku)}</code></td><td>${esc(p.name)}</td><td>${esc(p.category)}</td>`
+    + `<td>${p.price.toFixed(2)}</td><td>${p.stock}</td><td><input type="number" min="0" value="${esc(keep[p.sku] || 0)}" data-sku="${esc(p.sku)}"></td></tr>`).join("");
+}
+function cartLines(){
+  return [...document.querySelectorAll("#products input")]
+    .map(i => ({sku: i.dataset.sku, quantity: parseInt(i.value, 10) || 0})).filter(l => l.quantity > 0);
+}
+async function placeOrder(lines){
+  if (!lines.length) { $("#shopOut").textContent = "Set a quantity for at least one product (or use Random order)."; return; }
+  const res = await call("POST", "/api/orders", {customerId: $("#customer").value, lines});
+  show(res);
+  if (res.body && res.body.orderId){
+    lastOrderId = res.body.orderId;
+    $("#lastOrder").disabled = false;
+    $("#lastOrderId").textContent = "last order: " + lastOrderId;
+  }
+  loadProductsQuiet();
+}
+async function loadProductsQuiet(){ // refresh stock without adding a log row (still a request and a span)
+  const res = await call("GET", "/api/products", undefined, {quiet: true});
+  if (!Array.isArray(res.body)) return;
+  const stock = Object.fromEntries(res.body.map(p => [p.sku, p.stock]));
+  document.querySelectorAll("#products tbody tr").forEach(tr => {
+    const sku = tr.querySelector("input")?.dataset.sku; if (sku in stock) tr.children[4].textContent = stock[sku];
+  });
+}
+
+const customers = [...Array(50)].map((_, i) => "C" + String(i + 1).padStart(3, "0"));
+$("#customer").innerHTML = customers.map(c => `<option>${c}</option>`).join("")
+  + '<option value="C999">C999 (unknown → 404)</option>';
+$("#loadProducts").onclick = loadProducts;
+$("#clearCart").onclick = () => document.querySelectorAll("#products input").forEach(i => i.value = 0);
+$("#placeOrder").onclick = () => placeOrder(cartLines());
+$("#randomOrder").onclick = () => {
+  const n = 1 + Math.floor(Math.random() * 4), lines = [];
+  for (let i = 0; i < n; i++) lines.push({sku: "SKU-" + String(1 + Math.floor(Math.random() * 30)).padStart(3, "0"), quantity: 1 + Math.floor(Math.random() * 3)});
+  placeOrder(lines);
+};
+$("#lastOrder").onclick = async () => show(await call("GET", "/api/orders/" + lastOrderId));
+$("#history").onclick = async () => show(await call("GET", `/api/customers/${$("#customer").value}/orders?limit=5`));
+
+// --- scenarios -------------------------------------------------------------------
+const SCENARIOS = [
+  ["Unhandled exception", "GET /api/fail — thrown inside a custom span", () => call("GET", "/api/fail")],
+  ["Exception one level down", "GET /api/fail/nested — 500 from a call to /api/fail", () => call("GET", "/api/fail/nested")],
+  ["Unreachable host", "GET /api/fail/unreachable — DNS error on the CLIENT span", () => call("GET", "/api/fail/unreachable")],
+  ["Database error", "GET /api/fail/db — SELECT from a missing table", () => call("GET", "/api/fail/db")],
+  ["Out of stock", "POST /api/orders with quantity 5000 → 409, rollback", () => call("POST", "/api/orders", {customerId: $("#customer").value, lines: [{sku: "SKU-003", quantity: 5000}]})],
+  ["Unknown SKU", "POST /api/orders with SKU-404 → 400 after pricing", () => call("POST", "/api/orders", {customerId: $("#customer").value, lines: [{sku: "SKU-404", quantity: 1}]})],
+  ["Outgoing to infra", "GET /api/diagnostics/ping — calls otel-collector and /health", () => call("GET", "/api/diagnostics/ping")],
+  ["Wide span", "GET /api/wide — 200 attrs, 20 000-char value, 40 events, 40 links", () => call("GET", "/api/wide")],
+  ["Long SQL", "GET /api/db/long-query — ~17 000 characters of SQL", () => call("GET", "/api/db/long-query")],
+  ["Route with a dot", "GET /api/v1.0/products — hit by the file-extension filter", () => call("GET", "/api/v1.0/products")],
+  ["Noise", "GET /health, /ready, /metrics, /css/site.css, /js/site.js", async () => { for (const p of ["/health", "/ready", "/metrics", "/css/site.css", "/js/site.js"]) await call("GET", p); }],
+  ["Sampling burst", "50 × GET /api/products/{sku}, 5 at a time", async () => {
+    const paths = [...Array(50)].map((_, i) => "/api/products/SKU-" + String(1 + (i % 30)).padStart(3, "0"));
+    for (let i = 0; i < paths.length; i += 5) await Promise.all(paths.slice(i, i + 5).map(p => call("GET", p)));
+  }],
+];
+$("#scenarios").innerHTML = SCENARIOS.map(([t, d], i) => `<button data-i="${i}">${esc(t)}<small>${esc(d)}</small></button>`).join("");
+$("#scenarios").onclick = e => { const b = e.target.closest("button"); if (b) SCENARIOS[+b.dataset.i][2](); };
+
+$("#flush").onclick = () => call("POST", "/probe/flush");
+$("#clearLog").onclick = () => $("#logBody").innerHTML = "";
+
+// --- start -------------------------------------------------------------------------
+(async () => {
+  const info = await call("GET", "/probe/info", undefined, {quiet: true});
+  if (info.body && info.body.runId){
+    runId = info.body.runId;
+    $("#meta").innerHTML = `run <code>${esc(info.body.runId)}</code> · config <code>${esc(info.body.configName)}</code>`
+      + ` · ActivitySource <code>${esc(info.body.activitySource)}</code> · ${esc(info.body.framework)}`;
+  } else $("#meta").textContent = "/probe/info did not answer";
+  loadProducts();
+})();
+})();
+</script>
+</body>
+</html>

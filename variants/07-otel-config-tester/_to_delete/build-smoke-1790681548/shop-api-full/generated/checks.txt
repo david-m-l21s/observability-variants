@@ -1,0 +1,5 @@
+[info] Query parameter values stay off (default). Do not enable OTEL_DOTNET_EXPERIMENTAL_EFCORE_ENABLE_TRACE_DB_QUERY_PARAMETERS — parameters are where personal data lives.
+[info] SQL text in db.query.text is cut at 4096 characters. The span keeps the prefix; nothing marks the cut.
+[info] Span limits are read from environment / IConfiguration by the SDK at startup. Verify once on your SDK version (1.19.x) with a span that exceeds the limit.
+[probe] Custom spans use ActivitySource "T2A.Shop" (first entry of the configuration's source list).
+[probe] Console exporter is "only in Development", and this run is Production: no console output.

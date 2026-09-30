@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTel Tracing Configurator</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --border:#e2e5ea; --text:#1d2330; --muted:#667085; --accent:#3b6fd8; --accent-soft:#e8effc;
+  --warn:#a15c00; --warn-bg:#fff4e0; --info:#2f5fb3; --info-bg:#eaf1fd; --err:#b42318; --err-bg:#fdecea;
+  --code-bg:#15191f; --code-text:#d6dbe3; --c-com:#7f8a99; --c-str:#b5d68a; --c-kw:#c89bf0; --c-num:#f2b86b; --c-fn:#7fb8f5; --c-type:#6fd3c6; --flash:rgba(250,210,90,.18);
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0f1216; --panel:#171b21; --border:#2a3039; --text:#e4e7ec; --muted:#98a2b3; --accent:#6c9cf5; --accent-soft:#1e2a40;
+  --warn:#f5b85a; --warn-bg:#2e2412; --info:#8fb4f7; --info-bg:#172338; --err:#f78c80; --err-bg:#3a1714;
+  --code-bg:#0b0d10;
+}}
+:root[data-theme="dark"]{
+  --bg:#0f1216; --panel:#171b21; --border:#2a3039; --text:#e4e7ec; --muted:#98a2b3; --accent:#6c9cf5; --accent-soft:#1e2a40;
+  --warn:#f5b85a; --warn-bg:#2e2412; --info:#8fb4f7; --info-bg:#172338; --err:#f78c80; --err-bg:#3a1714;
+  --code-bg:#0b0d10;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel)}
+header h1{font-size:16px;margin:0;font-weight:650}
+header .sub{color:var(--muted);font-size:12px}
+header .spacer{flex:1}
+button,select,input,textarea{font:inherit;color:inherit}
+.btn{border:1px solid var(--border);background:var(--panel);border-radius:6px;padding:5px 10px;cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.layout{display:grid;grid-template-columns:400px 1fr;height:calc(100% - 53px)}
+aside{overflow:auto;border-right:1px solid var(--border);background:var(--panel);padding:10px 12px 40px}
+main{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.presets{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 10px}
+.presets .lbl{width:100%;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+details.group{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--panel)}
+details.group>summary{list-style:none;cursor:pointer;padding:8px 10px;font-weight:600;display:flex;align-items:center;gap:8px}
+details.group>summary::-webkit-details-marker{display:none}
+details.group>summary::before{content:"▸";color:var(--muted);transition:transform .15s}
+details.group[open]>summary::before{transform:rotate(90deg)}
+details.group>summary .badge{margin-left:auto;font-size:11px;font-weight:500;color:var(--muted)}
+.gbody{padding:2px 10px 10px}
+.row{margin:8px 0}
+.row.sub{margin-left:22px;padding-left:10px;border-left:2px solid var(--border)}
+.row.disabled{opacity:.45}
+.row label.chk{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
+.row label.chk input{margin-top:3px}
+.row .t{font-weight:500}
+.row code,.hint code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--accent-soft);padding:0 3px;border-radius:3px}
+.hint{color:var(--muted);font-size:12px;margin-top:2px}
+.field{display:flex;flex-direction:column;gap:3px}
+.field>span{font-size:12px;color:var(--muted)}
+.field input[type=text],.field input[type=number],.field select,.field textarea{width:100%;border:1px solid var(--border);border-radius:6px;padding:5px 7px;background:var(--bg)}
+.field textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;min-height:54px;resize:vertical}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{border:1px solid var(--border);border-radius:999px;padding:2px 9px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;cursor:pointer;user-select:none;background:var(--bg)}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+.tabs{display:flex;gap:2px;padding:8px 12px 0;background:var(--bg);border-bottom:1px solid var(--border)}
+.tab{border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;padding:6px 12px;cursor:pointer;color:var(--muted);background:none}
+.tab.on{background:var(--code-bg);color:var(--code-text);border-color:var(--border)}
+.tabs .spacer{flex:1}
+.tabs .btn{margin-bottom:5px}
+/* Output panes. Narrow: tabbed, one pane visible. Wide: packages + env stacked right of Program.cs. */
+.panes{flex:1;min-height:0;display:flex;flex-direction:column}
+.pane{display:none;flex:1;min-height:0;flex-direction:column;background:var(--code-bg)}
+.pane.on{display:flex}
+.phead{display:none;align-items:center;justify-content:space-between;padding:5px 8px 5px 14px;background:var(--bg);border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--muted)}
+.btn.sm{padding:2px 9px;font-size:12px}
+@media (min-width:1500px){
+  .tabs{display:none}
+  .panes{display:grid;grid-template-columns:1.25fr minmax(420px,.75fr);grid-template-rows:1fr 1fr;gap:1px;background:var(--border)}
+  .pane{display:flex}
+  .pane[data-pane="program"]{grid-column:1;grid-row:1 / span 2}
+  .pane[data-pane="packages"]{grid-column:2;grid-row:1}
+  .pane[data-pane="config"]{grid-column:2;grid-row:2}
+  .phead{display:flex}
+}
+.codewrap{flex:1;min-height:0;overflow:auto;background:var(--code-bg)}
+pre.code{margin:0;padding:14px 0;color:var(--code-text);font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;tab-size:4}
+pre.code .ln{display:block;padding:0 16px;white-space:pre}
+pre.code .ln.flash{background:var(--flash)}
+.tk-com{color:var(--c-com);font-style:italic}.tk-str{color:var(--c-str)}.tk-kw{color:var(--c-kw)}.tk-num{color:var(--c-num)}.tk-fn{color:var(--c-fn)}.tk-type{color:var(--c-type)}
+.checks{max-height:32%;overflow:auto;border-top:1px solid var(--border);background:var(--panel);padding:8px 12px}
+.checks h3{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.check{border-radius:6px;padding:6px 9px;margin:4px 0;font-size:12.5px}
+.check.warn{background:var(--warn-bg);color:var(--warn)}
+.check.info{background:var(--info-bg);color:var(--info)}
+.check.err{background:var(--err-bg);color:var(--err)}
+.check code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+.toast{position:fixed;bottom:16px;right:16px;background:var(--text);color:var(--bg);padding:7px 12px;border-radius:6px;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+@media (max-width:900px){
+  .layout{grid-template-columns:1fr;height:auto}
+  aside{border-right:none;border-bottom:1px solid var(--border);max-height:none}
+  main{min-height:70vh}
+  header .sub{display:none}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>OTel Tracing Configurator</h1>
+  <span class="sub">.NET · traces only · boilerplate for <code>AddOpenTelemetry().WithTracing(...)</code></span>
+  <span class="spacer"></span>
+  <button class="btn" id="btnShare" title="Copy a link that restores this exact configuration">Copy config link</button>
+  <button class="btn" id="btnRun" title="Copy a shell command that builds, deploys and probes this configuration (variant 07-otel-config-tester)">Copy run command</button>
+  <button class="btn" id="btnReset">Reset</button>
+  <button class="btn" id="btnTheme" title="Toggle light/dark">◐</button>
+</header>
+<div class="layout">
+  <aside id="sidebar"></aside>
+  <main>
+    <div class="tabs" id="tabs">
+      <button class="tab on" data-tab="program">Program.cs</button>
+      <button class="tab" data-tab="packages">.csproj packages</button>
+      <button class="tab" data-tab="config">Env / appsettings</button>
+      <span class="spacer"></span>
+      <button class="btn primary" id="btnCopy">Copy</button>
+    </div>
+    <div class="panes" id="panes">
+      <section class="pane" data-pane="packages">
+        <div class="phead"><span>.csproj packages</span><button class="btn sm" data-copy="packages">Copy</button></div>
+        <div class="codewrap"><pre class="code" id="code-packages"></pre></div>
+      </section>
+      <section class="pane" data-pane="config">
+        <div class="phead"><span>Env / appsettings</span><button class="btn sm" data-copy="config">Copy</button></div>
+        <div class="codewrap"><pre class="code" id="code-config"></pre></div>
+      </section>
+      <section class="pane on" data-pane="program">
+        <div class="phead"><span>Program.cs</span><button class="btn sm" data-copy="program">Copy</button></div>
+        <div class="codewrap"><pre class="code" id="code-program"></pre></div>
+      </section>
+    </div>
+    <div class="checks" id="checks"></div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * State & presets
+ * ------------------------------------------------------------------ */
+/* GEN-START ---------------------------------------------------------------- *
+ * Everything between GEN-START and GEN-END is pure: no DOM, no global state.
+ * Every generator takes the configuration object `s` as its argument.
+ * variants/07-otel-config-tester/scripts/render.mjs reads this block straight
+ * out of this file and runs it in Node, so the page and the test pipeline
+ * always generate the same code. Keep it free of DOM and browser APIs.
+ * -------------------------------------------------------------------------- */
+const FW_ORDER = {"net8.0":8,"net9.0":9,"net10.0":10};
+const PATH_CHIPS = ["/health","/healthz","/ready","/alive","/metrics","/swagger","/_framework","/_blazor","/_content","/css","/js","/lib","/favicon.ico"];
+
+const DEFAULTS = {
+  fw:"net9.0", comments:true,
+  // service
+  serviceName:"quote-api", serviceNamespace:"t2a", serviceVersion:"", versionFromAssembly:false,
+  envAttr:true, k8sAttrs:true, resAttrs:"",
+  // sampling
+  sampler:"parentAlwaysOn", ratio:"0.25",
+  // incoming
+  aspnet:true, aspRecordEx:true, aspEnrichEx:true,
+  aspFilter:true, filterPaths:["/health","/ready"], customPaths:"", filterExt:false, filterOptions:false,
+  captureHeaders:"", signalrOff:false, razorOff:false,
+  // outgoing
+  http:true, httpRecordEx:true, httpEnrichEx:true,
+  httpFilter:false, httpExcludeHosts:"", httpExcludePaths:"/health",
+  grpc:false,
+  // data
+  efcore:false, efSemconv:true, efLogWarn:true, sqlclient:false, npgsql:false, redis:false,
+  // custom & messaging
+  sources:"", massTransit:false, azure:false,
+  // export
+  otlp:true, otlpEndpointMode:"env", otlpEndpoint:"http://otel-collector:4317", otlpProtocol:"grpc",
+  batchDelay:"", batchQueue:"", batchSize:"",
+  console:"dev",
+  // limits (empty = SDK default)
+  limValueLen:"", limAttrCount:"", limEventCount:"", limLinkCount:"", limEventAttrCount:"", limLinkAttrCount:""
+};
+const LIMITS = [
+  {id:"limValueLen",       env:"OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT",  label:"Attribute value length", def:"unlimited", suggest:"4096",
+   hint:"Longest string any attribute may hold — cuts <code>db.query.text</code>, <code>url.full</code>, <code>exception.stacktrace</code>."},
+  {id:"limAttrCount",      env:"OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT",    label:"Attributes per span",    def:"128",       suggest:"64"},
+  {id:"limEventCount",     env:"OTEL_SPAN_EVENT_COUNT_LIMIT",        label:"Events per span",        def:"128",       suggest:"32",
+   hint:"Exception events and span events. A retry loop can add many."},
+  {id:"limLinkCount",      env:"OTEL_SPAN_LINK_COUNT_LIMIT",         label:"Links per span",         def:"128",       suggest:"32"},
+  {id:"limEventAttrCount", env:"OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT",   label:"Attributes per event",   def:"128",       suggest:"16"},
+  {id:"limLinkAttrCount",  env:"OTEL_LINK_ATTRIBUTE_COUNT_LIMIT",    label:"Attributes per link",    def:"128",       suggest:"16"}
+];
+
+const PRESETS = {
+  "Backend API": {},
+  "Blazor Server frontend": {
+    serviceName:"quote-web", fw:"net9.0",
+    aspFilter:true, filterPaths:["/health","/ready","/_framework","/_blazor","/_content","/css","/js","/lib","/favicon.ico"],
+    filterExt:true, signalrOff:true, razorOff:false, sources:"T2A.QuoteWeb"
+  },
+  "Blazor Server (.NET 10)": {
+    serviceName:"quote-web", fw:"net10.0",
+    aspFilter:true, filterPaths:["/health","/ready","/_framework","/_blazor","/_content","/css","/js","/lib","/favicon.ico"],
+    filterExt:true, signalrOff:true, razorOff:true, sources:"T2A.QuoteWeb"
+  },
+  "API + EF Core": { efcore:true, efSemconv:true, efLogWarn:true },
+  "Worker service": {
+    serviceName:"quote-worker", aspnet:false, aspFilter:false, sources:"T2A.QuoteWorker"
+  }
+};
+
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function fwMin(s, v){ return FW_ORDER[s.fw] >= v; }
+
+/* ------------------------------------------------------------------ *
+ * Code generation
+ * ------------------------------------------------------------------ */
+function lines(s){ return String(s||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean); }
+function cs(s){ return '"'+String(s).replace(/\\/g,"\\\\").replace(/"/g,'\\"')+'"'; }
+function num(s){ const t=String(s||"").trim(); return /^\d+$/.test(t) ? t : null; }
+
+function genProgram(s){
+  const out = [];
+  let ind = 0;
+  const L = (t="") => out.push(t ? " ".repeat(ind)+t : "");
+  const C = (t) => { if(s.comments) L("// "+t); };
+
+  const hdrs = lines(s.captureHeaders);
+  const needDiag = (s.aspnet&&(s.aspEnrichEx||hdrs.length)) || (s.http&&s.httpEnrichEx);
+  const batch = {d:num(s.batchDelay), q:num(s.batchQueue), b:num(s.batchSize)};
+  const hasBatch = batch.d||batch.q||batch.b;
+  const otlpCode = s.otlp && (s.otlpEndpointMode==="code" || hasBatch);
+  const needExporterNs = s.otlp && (s.otlpEndpointMode==="code");
+
+  if(needDiag) L("using System.Diagnostics;");
+  if(needExporterNs) L("using OpenTelemetry.Exporter;");
+  L("using OpenTelemetry.Resources;");
+  L("using OpenTelemetry.Trace;");
+  L();
+  L("// ---- OpenTelemetry: tracing ----------------------------------------------");
+
+  if(s.azure){
+    C("Azure SDK ActivitySources are experimental and must be switched on explicitly,");
+    C("before any Azure client is created.");
+    L('AppContext.SetSwitch("Azure.Experimental.EnableActivitySource", true);');
+    L();
+  }
+
+  // resource
+  const svcArgs = [`serviceName: ${cs(s.serviceName||"my-service")}`];
+  if(s.serviceNamespace.trim()) svcArgs.push(`serviceNamespace: ${cs(s.serviceNamespace.trim())}`);
+  if(s.versionFromAssembly) svcArgs.push("serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString()");
+  else if(s.serviceVersion.trim()) svcArgs.push(`serviceVersion: ${cs(s.serviceVersion.trim())}`);
+
+  const attrs = [];
+  if(s.envAttr) attrs.push(`new("deployment.environment.name", builder.Environment.EnvironmentName),`);
+  for(const l of lines(s.resAttrs)){
+    const i = l.indexOf("="); if(i<1) continue;
+    attrs.push(`new(${cs(l.slice(0,i).trim())}, ${cs(l.slice(i+1).trim())}),`);
+  }
+
+  L("builder.Services.AddOpenTelemetry()");
+  ind = 4;
+  if(s.k8sAttrs && s.comments) L("// k8s.* attributes arrive via OTEL_RESOURCE_ATTRIBUTES (see Env tab).");
+  L(".ConfigureResource(resource => resource");
+  ind = 8;
+  if(svcArgs.length===1) L(`.AddService(${svcArgs[0]})${attrs.length?"":")"}`);   // one ")" closes ConfigureResource
+  else {
+    L(".AddService(");
+    svcArgs.forEach((a,i)=>{ ind=12; L(a+(i<svcArgs.length-1?",":attrs.length?")":"))")); });
+    ind = 8;
+  }
+  if(attrs.length){
+    L(".AddAttributes(new KeyValuePair<string, object>[]");
+    L("{");
+    ind = 12; attrs.forEach(a=>L(a)); ind = 8;
+    L("}))");
+  }
+  ind = 4;
+  L(".WithTracing(tracing =>");
+  L("{");
+  ind = 8;
+
+  let first = true;
+  const section = (title) => { if(!first) L(); first = false; C(title); };
+
+  // sampler
+  if(s.sampler!=="parentAlwaysOn"){
+    section("Sampling");
+    if(s.sampler==="alwaysOn"){
+      C("Ignores the upstream decision. Fine for a workshop, not a T2A default.");
+      L("tracing.SetSampler(new AlwaysOnSampler());");
+    }else if(s.sampler==="alwaysOff"){
+      L("tracing.SetSampler(new AlwaysOffSampler());");
+    }else{
+      C("Decide once at the edge; downstream services obey the parent's decision.");
+      const r = parseFloat(s.ratio); const rv = isFinite(r) ? String(r) : "1.0";
+      L(`tracing.SetSampler(new ParentBasedSampler(new TraceIdRatioBasedSampler(${rv.includes(".")?rv:rv+".0"})));`);
+    }
+  }else if(s.comments){
+    section("Sampling: SDK default is ParentBased(AlwaysOn) — nothing to set.");
+  }
+
+  // incoming
+  if(s.aspnet){
+    section("Incoming HTTP requests -> SERVER spans");
+    const body = [];
+    if(s.aspRecordEx) body.push(["o.RecordException = true;"]);
+    if(s.aspFilter){
+      const prefixes = [...s.filterPaths, ...lines(s.customPaths)];
+      const conds = prefixes.map(p=>`p.StartsWith(${cs(p)}, StringComparison.OrdinalIgnoreCase)`);
+      if(s.filterExt) conds.push("Path.HasExtension(p)");
+      if(conds.length || s.filterOptions){
+        const b = [];
+        if(s.comments) b.push("// return false = no span is created for this request");
+        b.push("o.Filter = ctx =>");
+        b.push("{");
+        if(s.filterOptions) b.push("    if (HttpMethods.IsOptions(ctx.Request.Method)) return false;");
+        if(conds.length){
+          b.push("    var p = ctx.Request.Path.Value ?? string.Empty;");
+          if(conds.length===1) b.push(`    return !${conds[0]};`);
+          else {
+            b.push(`    return !(${conds[0]}`);
+            for(let i=1;i<conds.length;i++) b.push(`          || ${conds[i]}${i===conds.length-1?");":""}`);
+          }
+        } else b.push("    return true;");
+        b.push("};");
+        body.push(b);
+      }
+    }
+    if(s.aspEnrichEx) body.push(["o.EnrichWithException = (activity, ex) =>","    activity.SetStatus(ActivityStatusCode.Error, ex.Message);"]);
+    if(hdrs.length){
+      const b = ["o.EnrichWithHttpRequest = (activity, request) =>","{"];
+      for(const hname of hdrs){
+        const k = hname.toLowerCase();
+        b.push(`    if (request.Headers.TryGetValue(${cs(hname)}, out var ${varName(k)}))`);
+        b.push(`        activity.SetTag(${cs("http.request.header."+k)}, ${varName(k)}.ToString());`);
+      }
+      b.push("};");
+      body.push(b);
+    }
+    if(s.signalrOff && fwMin(s,9)){
+      const b = [];
+      if(s.comments) b.push("// Blazor Server: no root span per SignalR hub call (render acks, JS interop).");
+      b.push("o.EnableAspNetCoreSignalRSupport = false;");
+      body.push(b);
+    }
+    if(s.razorOff && fwMin(s,10)){
+      const b = [];
+      if(s.comments) b.push("// No 'Event onclick -> Component.Method' / 'Route' spans (.NET 10+).");
+      b.push("o.EnableRazorComponentsSupport = false;");
+      body.push(b);
+    }
+    emitCall("tracing.AddAspNetCoreInstrumentation", body);
+  }
+
+  // outgoing http
+  if(s.http){
+    section("Outgoing HttpClient calls -> CLIENT spans (+ traceparent propagation)");
+    const body = [];
+    if(s.httpRecordEx) body.push(["o.RecordException = true;"]);
+    if(s.httpFilter){
+      const hosts = lines(s.httpExcludeHosts), paths = lines(s.httpExcludePaths);
+      const conds = [
+        ...hosts.map(h=>`uri.Host.Equals(${cs(h)}, StringComparison.OrdinalIgnoreCase)`),
+        ...paths.map(p=>`uri.AbsolutePath.StartsWith(${cs(p)}, StringComparison.OrdinalIgnoreCase)`)
+      ];
+      if(conds.length){
+        const b = ["o.FilterHttpRequestMessage = request =>","{","    var uri = request.RequestUri;","    if (uri is null) return true;"];
+        if(conds.length===1) b.push(`    return !${conds[0]};`);
+        else {
+          b.push(`    return !(${conds[0]}`);
+          for(let i=1;i<conds.length;i++) b.push(`          || ${conds[i]}${i===conds.length-1?");":""}`);
+        }
+        b.push("};");
+        body.push(b);
+      }
+    }
+    if(s.httpEnrichEx) body.push(["o.EnrichWithException = (activity, ex) =>","    activity.SetStatus(ActivityStatusCode.Error, ex.Message);"]);
+    emitCall("tracing.AddHttpClientInstrumentation", body);
+  }
+  if(s.grpc){
+    section("Outgoing gRPC calls");
+    L("tracing.AddGrpcClientInstrumentation();");
+  }
+
+  // data
+  if(s.efcore||s.sqlclient||s.npgsql||s.redis){
+    section("Databases & caches -> CLIENT spans");
+    if(s.efcore){
+      if(s.comments){
+        L("// NOT AddSource(\"Microsoft.EntityFrameworkCore\"): that is a DiagnosticListener,");
+        L("// not an ActivitySource — AddSource would silently do nothing.");
+      }
+      L("tracing.AddEntityFrameworkCoreInstrumentation();");
+    }
+    if(s.sqlclient) L("tracing.AddSqlClientInstrumentation();");
+    if(s.npgsql) L("tracing.AddNpgsql();");
+    if(s.redis) L("tracing.AddRedisInstrumentation();");
+  }
+
+  // custom sources
+  const srcs = lines(s.sources);
+  if(srcs.length||s.massTransit||s.azure){
+    section("ActivitySources to listen to");
+    srcs.forEach(x=>L(`tracing.AddSource(${cs(x)});`));
+    if(s.massTransit) L('tracing.AddSource("MassTransit");');
+    if(s.azure) L('tracing.AddSource("Azure.*");');
+  }
+
+  // export
+  if(s.otlp||s.console!=="off"){
+    section("Export");
+    if(s.otlp){
+      if(!otlpCode){
+        if(s.comments) L("// Endpoint + protocol from OTEL_EXPORTER_OTLP_* (see Env tab).");
+        L("tracing.AddOtlpExporter();");
+      }else{
+        L("tracing.AddOtlpExporter(o =>");
+        L("{");
+        ind = 12;
+        if(s.otlpEndpointMode==="code"){
+          let ep = s.otlpEndpoint.trim()||"http://localhost:4317";
+          if(s.otlpProtocol==="http/protobuf" && !/\/v1\/traces\/?$/.test(ep)){
+            ep = ep.replace(/\/+$/,"")+"/v1/traces";
+            if(s.comments) L("// Set in code, the HTTP endpoint needs the full signal path.");
+          }
+          L(`o.Endpoint = new Uri(${cs(ep)});`);
+          L(`o.Protocol = OtlpExportProtocol.${s.otlpProtocol==="grpc"?"Grpc":"HttpProtobuf"};`);
+        }
+        if(batch.d) L(`o.BatchExportProcessorOptions.ScheduledDelayMilliseconds = ${batch.d};`);
+        if(batch.q) L(`o.BatchExportProcessorOptions.MaxQueueSize = ${batch.q};`);
+        if(batch.b) L(`o.BatchExportProcessorOptions.MaxExportBatchSize = ${batch.b};`);
+        ind = 8;
+        L("});");
+      }
+    }
+    if(s.console==="always") L("tracing.AddConsoleExporter();");
+    else if(s.console==="dev"){
+      L("if (builder.Environment.IsDevelopment())");
+      L("    tracing.AddConsoleExporter();");
+    }
+  }
+  if(s.comments && LIMITS.some(l=>num(s[l.id]))){
+    section("Span limits: set via OTEL_*_LIMIT environment variables (see Env tab).");
+  }
+  ind = 4;
+  L("});");
+  return out.join("\n");
+
+  function emitCall(name, body){
+    if(!body.length){ L(name+"();"); return; }
+    L(name+"(o =>");
+    L("{");
+    ind += 4;
+    body.forEach((b,i)=>{ if(i>0 && (b.length>1 || body[i-1].length>1)) L(); b.forEach(x=>L(x)); });
+    ind -= 4;
+    L("});");
+  }
+}
+function varName(k){
+  const parts = k.split(/[^a-z0-9]+/).filter(Boolean);
+  let v = parts.map((p,i)=>i?p[0].toUpperCase()+p.slice(1):p).join("") || "h";
+  if(/^\d/.test(v)) v = "h"+v;
+  return v;
+}
+
+function genPackageList(s){
+  const P = [];
+  const add = (id, ver, note) => P.push({id, ver, note});
+  add("OpenTelemetry.Extensions.Hosting","1.19.1");
+  if(s.otlp) add("OpenTelemetry.Exporter.OpenTelemetryProtocol","1.19.1");
+  if(s.console!=="off") add("OpenTelemetry.Exporter.Console","1.19.1");
+  if(s.aspnet) add("OpenTelemetry.Instrumentation.AspNetCore","1.19.0");
+  if(s.http) add("OpenTelemetry.Instrumentation.Http","1.19.0");
+  if(s.grpc) add("OpenTelemetry.Instrumentation.GrpcNetClient","CHECK","prerelease");
+  if(s.efcore) add("OpenTelemetry.Instrumentation.EntityFrameworkCore","1.19.1-beta.1","prerelease — needs OTel core >= 1.19.1");
+  if(s.sqlclient) add("OpenTelemetry.Instrumentation.SqlClient","CHECK","prerelease");
+  if(s.npgsql) add("Npgsql.OpenTelemetry","CHECK","same version as your Npgsql package");
+  if(s.redis) add("OpenTelemetry.Instrumentation.StackExchangeRedis","CHECK","prerelease");
+  return P;
+}
+function genPackages(s){
+  const P = genPackageList(s);
+  const out = ["<!-- OpenTelemetry — tracing. Keep all core OTel packages on one version line. -->","<ItemGroup>"];
+  for(const p of P){
+    const notes = [];
+    if(p.ver==="CHECK") notes.push("pick the current version");
+    if(p.note) notes.push(p.note);
+    const ver = p.ver==="CHECK" ? "x.y.z" : p.ver;
+    out.push(`  <PackageReference Include="${p.id}" Version="${ver}" />` + (notes.length ? `  <!-- ${notes.join("; ")} -->` : ""));
+  }
+  out.push("</ItemGroup>");
+  return out.join("\n");
+}
+
+/* Structured env: [{name, value}] or [{name, fieldPath}]. Order matters:
+   OTEL_RESOURCE_ATTRIBUTES refers to K8S_* with $(...), so those come first. */
+function genEnv(s){
+  const env = [];
+  const E = (name,value) => env.push({name, value:String(value)});
+  const F = (name,fieldPath) => env.push({name, fieldPath});
+  if(s.otlp && s.otlpEndpointMode==="env"){
+    E("OTEL_EXPORTER_OTLP_ENDPOINT", s.otlpEndpoint.trim()||"http://otel-collector:4317");
+    E("OTEL_EXPORTER_OTLP_PROTOCOL", s.otlpProtocol);
+  }
+  if((s.efcore||s.sqlclient) && s.efSemconv) E("OTEL_SEMCONV_STABILITY_OPT_IN","database");
+  for(const l of LIMITS){ const v = num(s[l.id]); if(v) E(l.env, v); }
+  if(s.k8sAttrs){
+    F("K8S_POD_NAME","metadata.name");
+    F("K8S_NAMESPACE_NAME","metadata.namespace");
+    F("K8S_NODE_NAME","spec.nodeName");
+    E("OTEL_RESOURCE_ATTRIBUTES","k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE_NAME),k8s.node.name=$(K8S_NODE_NAME)");
+  }
+  return env;
+}
+/* appsettings.json fragment to merge, or null. */
+function genAppsettings(s){
+  if(s.efcore && s.efLogWarn) return {Logging:{LogLevel:{"Microsoft.EntityFrameworkCore.Database.Command":"Warning"}}};
+  return null;
+}
+function genConfig(s){
+  const env = [];
+  for(const e of genEnv(s)){
+    if(e.fieldPath) env.push(`  - name: ${e.name}`, `    valueFrom:`, `      fieldRef:`, `        fieldPath: ${e.fieldPath}`);
+    else env.push(`  - name: ${e.name}`, `    value: "${e.value}"`);
+  }
+  const out = [];
+  out.push("# ---- Kubernetes: container env ----------------------------------------");
+  if(env.length){ out.push("env:"); out.push(...env); }
+  else out.push("# nothing required for this configuration");
+  const app = genAppsettings(s);
+  if(app){
+    out.push("", "# ---- appsettings.json ---------------------------------------------------",
+      "# Merge into the \"Logging\" section:",
+      ...JSON.stringify(app, null, 2).split("\n"));
+  }
+  return out.join("\n");
+}
+
+/* ------------------------------------------------------------------ *
+ * Checks
+ * ------------------------------------------------------------------ */
+function genChecks(s){
+  const c = [];
+  const W = t=>c.push(["warn",t]), I = t=>c.push(["info",t]), X = t=>c.push(["err",t]);
+  const srcs = lines(s.sources);
+  if(!s.otlp && s.console==="off") X("No exporter selected — spans are created but go nowhere.");
+  if(s.sampler==="alwaysOn") W("<code>AlwaysOnSampler</code> ignores the parent's sampling decision. Use a ParentBased sampler so one decision at the edge holds for the whole trace.");
+  if(s.sampler==="parentRatio"){ const r=parseFloat(s.ratio); if(!(r>=0&&r<=1)) X("Sampling ratio must be a number between 0 and 1."); }
+  if(s.console==="always") W("Console exporter is on in every environment — every span is also written to stdout (and into your log pipeline).");
+  const blazorish = s.signalrOff || s.razorOff || s.filterPaths.includes("/_blazor");
+  if(blazorish && !srcs.length) W("Blazor Server trap: user actions arrive as SignalR calls, not HTTP requests. With the framework noise removed there is nothing left to root frontend traces — add your own ActivitySource and start one span per business action.");
+  if(!s.aspnet && s.http && !srcs.length) W("No incoming instrumentation and no custom source: every outgoing call becomes its own root span.");
+  if(s.aspnet && fwMin(s,9) && !s.signalrOff && s.filterPaths.includes("/_blazor")) I("Filtering <code>/_blazor</code> only drops the HTTP negotiate/connect requests. The hub-method spans come from the SignalR source — switch off <code>EnableAspNetCoreSignalRSupport</code>.");
+  if(s.aspnet && fwMin(s,10) && blazorish && !s.razorOff) W("On .NET 10 the <code>Microsoft.AspNetCore.Components</code> source emits a span per component event (<code>Event onclick -&gt; …</code>). Switch off <code>EnableRazorComponentsSupport</code>.");
+  if(s.aspnet && s.aspFilter && !s.filterPaths.length && !lines(s.customPaths).length && !s.filterExt && !s.filterOptions) I("Filter is enabled but empty — nothing is dropped.");
+  const bad = lines(s.captureHeaders).filter(h=>/^(authorization|cookie|set-cookie|x-api-key)$/i.test(h));
+  if(bad.length) X("Do not copy credential headers into spans: <code>"+bad.map(esc).join(", ")+"</code>.");
+  if(s.efcore && (s.sqlclient||s.npgsql)) W("EF Core + a driver-level instrumentation both on: every query produces two spans. Pick one.");
+  if(s.efcore && !s.efSemconv) I("EF Core instrumentation emits the OLD db attributes (<code>db.statement</code>, span name = database name) without <code>OTEL_SEMCONV_STABILITY_OPT_IN=database</code>.");
+  if(s.efcore) I("Query parameter values stay off (default). Do not enable <code>OTEL_DOTNET_EXPERIMENTAL_EFCORE_ENABLE_TRACE_DB_QUERY_PARAMETERS</code> — parameters are where personal data lives.");
+  if(s.otlp && s.otlpEndpointMode==="code") I("Endpoint is hard-coded. Env vars keep the image identical between VM, cluster and local runs.");
+  if(s.filterExt && s.aspnet && s.aspFilter) I("<code>Path.HasExtension</code> also drops API routes containing a dot (e.g. <code>/api/v1.0/…</code>, <code>/files/report.pdf</code>).");
+  if(["grpc","sqlclient","npgsql","redis"].some(k=>s[k])) I("Some selected packages have no pinned version here — see the <code>x.y.z</code> placeholders in the packages tab.");
+  for(const l of LIMITS){ const t=String(s[l.id]||"").trim(); if(t && !num(t)) X(`${l.label}: <code>${esc(t)}</code> is not a whole number — it is ignored.`); }
+  const vl = num(s.limValueLen);
+  if(vl && +vl < 1024) W(`Attribute value length ${vl} is short: stack traces and SQL text will be cut to a point where they are hard to use.`);
+  if(vl && s.efcore) I(`SQL text in <code>db.query.text</code> is cut at ${vl} characters. The span keeps the prefix; nothing marks the cut.`);
+  if(!vl && (s.efcore||s.sqlclient||s.npgsql||s.aspRecordEx||s.httpRecordEx)) I("No attribute value length limit: long SQL text and full exception stack traces go into ClickHouse unchanged. Consider <code>OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT</code>.");
+  if(LIMITS.some(l=>num(s[l.id]))) I("Span limits are read from environment / IConfiguration by the SDK at startup. Verify once on your SDK version (1.19.x) with a span that exceeds the limit.");
+  return c;
+}
+/* GEN-END */
+
+
+let state = load();
+
+function clone(o){ return JSON.parse(JSON.stringify(o)); }
+function load(){
+  try{
+    if(location.hash.length>1){
+      const s = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
+      return Object.assign(clone(DEFAULTS), s);
+    }
+  }catch(e){}
+  try{
+    const raw = localStorage.getItem("otel-tracing-configurator");
+    if(raw) return Object.assign(clone(DEFAULTS), JSON.parse(raw));
+  }catch(e){}
+  return clone(DEFAULTS);
+}
+function save(){ try{ localStorage.setItem("otel-tracing-configurator", JSON.stringify(state)); }catch(e){} }
+function fwAtLeast(v){ return fwMin(state, v); }
+
+/* ------------------------------------------------------------------ *
+ * Sidebar spec
+ * type: check | text | number | select | textarea | chips | html
+ * when: () => bool   -> row disabled when false
+ * sub: true          -> indented under the previous toggle
+ * ------------------------------------------------------------------ */
+const GROUPS = [
+  { id:"general", title:"General", open:true, items:[
+    {id:"fw", type:"select", label:"Target framework", options:[["net8.0","net8.0"],["net9.0","net9.0"],["net10.0","net10.0"]],
+     hint:"Gates options that only exist on newer ASP.NET Core versions."},
+    {id:"comments", type:"check", label:"Explanatory comments in the snippet"}
+  ]},
+  { id:"service", title:"Service & resource", open:true, badge:()=>state.serviceName, items:[
+    {id:"serviceName", type:"text", label:"service.name"},
+    {id:"serviceNamespace", type:"text", label:"service.namespace", hint:"Groups services of one system (e.g. the T2A vertical). Leave empty to omit."},
+    {id:"serviceVersion", type:"text", label:"service.version", hint:"Literal value. Leave empty to omit.", when:()=>!state.versionFromAssembly},
+    {id:"versionFromAssembly", type:"check", label:"Take service.version from the assembly version"},
+    {id:"envAttr", type:"check", label:"<code>deployment.environment.name</code> from ASPNETCORE_ENVIRONMENT"},
+    {id:"k8sAttrs", type:"check", label:"k8s pod / namespace / node via Downward API",
+     hint:"Emits env entries in the Env tab; the SDK picks them up from <code>OTEL_RESOURCE_ATTRIBUTES</code>. This is how variants are told apart by <code>k8s.namespace.name</code>."},
+    {id:"resAttrs", type:"textarea", label:"Extra resource attributes (key=value per line)", placeholder:"team=pricing\nvertical=t2a"}
+  ]},
+  { id:"sampling", title:"Sampling", badge:()=>({alwaysOn:"AlwaysOn",parentAlwaysOn:"ParentBased(AlwaysOn)",parentRatio:"ParentBased(ratio)",alwaysOff:"AlwaysOff"})[state.sampler], items:[
+    {id:"sampler", type:"select", label:"Sampler", options:[
+      ["parentAlwaysOn","ParentBased(AlwaysOn) — follow upstream, keep all roots"],
+      ["parentRatio","ParentBased(TraceIdRatio) — follow upstream, sample roots"],
+      ["alwaysOn","AlwaysOn — keep everything, ignore upstream"],
+      ["alwaysOff","AlwaysOff — record nothing"]]},
+    {id:"ratio", type:"text", label:"Root sampling ratio (0–1)", sub:true, when:()=>state.sampler==="parentRatio"}
+  ]},
+  { id:"incoming", title:"Incoming HTTP (ASP.NET Core)", badge:()=>state.aspnet?"on":"off", items:[
+    {id:"aspnet", type:"check", label:"<code>AddAspNetCoreInstrumentation()</code>", hint:"Server spans for incoming requests. Off for pure worker services."},
+    {id:"aspRecordEx", type:"check", sub:true, label:"<code>RecordException = true</code>", hint:"Adds an <code>exception</code> event with type, message and stack.", when:()=>state.aspnet},
+    {id:"aspEnrichEx", type:"check", sub:true, label:"<code>EnrichWithException</code> → status Error + message", when:()=>state.aspnet},
+    {id:"aspFilter", type:"check", sub:true, label:"<code>Filter</code> — drop noise requests", when:()=>state.aspnet},
+    {id:"filterPaths", type:"chips", sub:true, label:"Path prefixes to drop", chips:PATH_CHIPS, when:()=>state.aspnet&&state.aspFilter},
+    {id:"customPaths", type:"textarea", sub:true, label:"Additional prefixes (one per line)", placeholder:"/api/ping", when:()=>state.aspnet&&state.aspFilter},
+    {id:"filterExt", type:"check", sub:true, label:"Drop any path with a file extension (static assets)", hint:"<code>Path.HasExtension(p)</code>. Careful with routes like <code>/api/v1.0/…</code>.", when:()=>state.aspnet&&state.aspFilter},
+    {id:"filterOptions", type:"check", sub:true, label:"Drop CORS preflight (<code>OPTIONS</code>)", when:()=>state.aspnet&&state.aspFilter},
+    {id:"captureHeaders", type:"textarea", sub:true, label:"Request headers → span attributes (one per line)", placeholder:"x-tenant-id\nx-correlation-id",
+     hint:"Written as <code>http.request.header.&lt;name&gt;</code>. Never Authorization or Cookie.", when:()=>state.aspnet},
+    {id:"signalrOff", type:"check", sub:true, label:"<code>EnableAspNetCoreSignalRSupport = false</code>",
+     hint:"Blazor Server: one root span per hub call (render acks, JS interop). Was 65% of the trace store. .NET 9+.", when:()=>state.aspnet&&fwAtLeast(9)},
+    {id:"razorOff", type:"check", sub:true, label:"<code>EnableRazorComponentsSupport = false</code>",
+     hint:"Razor component event/route spans. .NET 10+ only — the option compiles on older targets but has no effect there.", when:()=>state.aspnet&&fwAtLeast(10)}
+  ]},
+  { id:"outgoing", title:"Outgoing calls", badge:()=>[state.http&&"HTTP",state.grpc&&"gRPC"].filter(Boolean).join(" + ")||"off", items:[
+    {id:"http", type:"check", label:"<code>AddHttpClientInstrumentation()</code>", hint:"Client spans + traceparent propagation for HttpClient."},
+    {id:"httpRecordEx", type:"check", sub:true, label:"<code>RecordException = true</code>", when:()=>state.http},
+    {id:"httpEnrichEx", type:"check", sub:true, label:"<code>EnrichWithException</code> → status Error + message", when:()=>state.http},
+    {id:"httpFilter", type:"check", sub:true, label:"<code>FilterHttpRequestMessage</code> — drop probe/infra calls", when:()=>state.http},
+    {id:"httpExcludeHosts", type:"textarea", sub:true, label:"Hosts to drop (one per line)", placeholder:"otel-collector\nlocalhost", when:()=>state.http&&state.httpFilter},
+    {id:"httpExcludePaths", type:"textarea", sub:true, label:"Path prefixes to drop (one per line)", when:()=>state.http&&state.httpFilter},
+    {id:"grpc", type:"check", label:"<code>AddGrpcClientInstrumentation()</code>", hint:"Grpc.Net.Client calls. Prerelease package."}
+  ]},
+  { id:"data", title:"Databases & caches", badge:()=>[state.efcore&&"EF",state.sqlclient&&"SqlClient",state.npgsql&&"Npgsql",state.redis&&"Redis"].filter(Boolean).join(", ")||"none", items:[
+    {id:"efcore", type:"check", label:"<code>AddEntityFrameworkCoreInstrumentation()</code>", hint:"Provider-agnostic, prerelease. Relational providers only (EF InMemory produces no spans)."},
+    {id:"efSemconv", type:"check", sub:true, label:"Stable DB semconv (<code>OTEL_SEMCONV_STABILITY_OPT_IN=database</code>)",
+     hint:"Without it: old <code>db.statement</code>, span name = database name (<code>main</code> on SQLite).", when:()=>state.efcore||state.sqlclient},
+    {id:"efLogWarn", type:"check", sub:true, label:"EF command logs → Warning", hint:"Otherwise every SQL command is also stored as an Information log.", when:()=>state.efcore},
+    {id:"sqlclient", type:"check", label:"<code>AddSqlClientInstrumentation()</code>", hint:"Driver-level, SQL Server. Use instead of EF when the DB is fixed — avoid double spans."},
+    {id:"npgsql", type:"check", label:"<code>AddNpgsql()</code>", hint:"Driver-level PostgreSQL (Npgsql.OpenTelemetry, versioned with Npgsql)."},
+    {id:"redis", type:"check", label:"<code>AddRedisInstrumentation()</code>", hint:"StackExchange.Redis. Needs the IConnectionMultiplexer registered in DI."}
+  ]},
+  { id:"custom", title:"Custom & library sources", badge:()=>{const n=lines(state.sources).length+(state.massTransit?1:0)+(state.azure?1:0);return n?n+" source"+(n>1?"s":""):"none";}, items:[
+    {id:"sources", type:"textarea", label:"Your ActivitySource names (one per line)", placeholder:"T2A.Quotes",
+     hint:"The domain root spans (\"Create quote\") come from here. Wildcards allowed: <code>T2A.*</code>."},
+    {id:"massTransit", type:"check", label:"MassTransit (<code>AddSource(\"MassTransit\")</code>)"},
+    {id:"azure", type:"check", label:"Azure SDK (<code>AddSource(\"Azure.*\")</code> + AppContext switch)"}
+  ]},
+  { id:"limits", title:"Span limits", badge:()=>{const n=LIMITS.filter(l=>num(state[l.id])).length;return n?n+" set":"SDK defaults";}, items:[
+    {id:"limitsIntro", type:"html", html:"Caps the size of every span before export — and therefore the row width in ClickHouse. Set via environment variables (Env tab); the .NET SDK has no public code API for these. Empty = SDK default."},
+    {id:"limitsSuggest", type:"buttons", buttons:[["suggest","Fill suggested values"],["clear","Clear all"]]},
+    ...LIMITS.map(l=>({id:l.id, type:"text", label:`${l.label} <code>${l.env}</code>`, placeholder:"default: "+l.def, hint:l.hint}))
+  ]},
+  { id:"export", title:"Export", badge:()=>[state.otlp&&"OTLP",state.console!=="off"&&"Console"].filter(Boolean).join(" + ")||"none", items:[
+    {id:"otlp", type:"check", label:"<code>AddOtlpExporter()</code>"},
+    {id:"otlpEndpointMode", type:"select", sub:true, label:"Endpoint & protocol configured via", options:[["env","Environment variables (recommended)"],["code","Hard-coded in Program.cs"]], when:()=>state.otlp},
+    {id:"otlpEndpoint", type:"text", sub:true, label:"Endpoint", when:()=>state.otlp},
+    {id:"otlpProtocol", type:"select", sub:true, label:"Protocol", options:[["grpc","gRPC (:4317)"],["http/protobuf","HTTP/protobuf (:4318)"]], when:()=>state.otlp},
+    {id:"batch", type:"batch", sub:true, label:"Batch processor (empty = SDK default)", when:()=>state.otlp},
+    {id:"console", type:"select", label:"Console exporter", options:[["off","Off"],["dev","Only in Development"],["always","Always"]],
+     hint:"Prints every span to stdout. Useful locally, expensive and noisy in the cluster."}
+  ]}
+];
+
+/* ------------------------------------------------------------------ *
+ * Sidebar rendering
+ * ------------------------------------------------------------------ */
+const sidebar = document.getElementById("sidebar");
+const openState = {};
+
+function renderSidebar(){
+  document.querySelectorAll("details.group").forEach(d=>openState[d.dataset.id]=d.open);
+  let h = '<div class="presets"><span class="lbl">Start from a preset</span>';
+  for(const name of Object.keys(PRESETS)) h += `<button class="btn" data-preset="${esc(name)}">${esc(name)}</button>`;
+  h += "</div>";
+  for(const g of GROUPS){
+    const open = (g.id in openState) ? openState[g.id] : !!g.open;
+    h += `<details class="group" data-id="${g.id}"${open?" open":""}><summary>${esc(g.title)}${g.badge?`<span class="badge">${esc(g.badge()||"")}</span>`:""}</summary><div class="gbody">`;
+    for(const it of g.items){
+      const enabled = it.when ? it.when() : true;
+      const cls = "row"+(it.sub?" sub":"")+(enabled?"":" disabled");
+      const dis = enabled ? "" : " disabled";
+      const hint = it.hint ? `<div class="hint">${it.hint}</div>` : "";
+      if(it.type==="check"){
+        h += `<div class="${cls}"><label class="chk"><input type="checkbox" data-id="${it.id}"${state[it.id]?" checked":""}${dis}><span><span class="t">${it.label}</span>${hint}</span></label></div>`;
+      }else if(it.type==="text"||it.type==="number"){
+        h += `<div class="${cls}"><label class="field"><span>${it.label}</span><input type="text" data-id="${it.id}" placeholder="${esc(it.placeholder||"")}" value="${esc(state[it.id])}"${dis}></label>${hint}</div>`;
+      }else if(it.type==="html"){
+        h += `<div class="${cls}"><div class="hint">${it.html}</div></div>`;
+      }else if(it.type==="buttons"){
+        h += `<div class="${cls}"><div class="presets">${it.buttons.map(([a,l])=>`<button class="btn" data-action="${a}">${esc(l)}</button>`).join("")}</div></div>`;
+      }else if(it.type==="textarea"){
+        h += `<div class="${cls}"><label class="field"><span>${it.label}</span><textarea data-id="${it.id}" placeholder="${esc(it.placeholder||"")}"${dis}>${esc(state[it.id])}</textarea></label>${hint}</div>`;
+      }else if(it.type==="select"){
+        h += `<div class="${cls}"><label class="field"><span>${it.label}</span><select data-id="${it.id}"${dis}>${it.options.map(([v,l])=>`<option value="${esc(v)}"${state[it.id]===v?" selected":""}>${esc(l)}</option>`).join("")}</select></label>${hint}</div>`;
+      }else if(it.type==="chips"){
+        h += `<div class="${cls}"><div class="field"><span>${it.label}</span><div class="chips">${it.chips.map(c=>`<span class="chip${state[it.id].includes(c)?" on":""}" data-chip="${it.id}" data-val="${esc(c)}">${esc(c)}</span>`).join("")}</div></div>${hint}</div>`;
+      }else if(it.type==="batch"){
+        h += `<div class="${cls}"><div class="field"><span>${it.label}</span><div class="grid3">
+          <label class="field"><span>Delay ms</span><input type="text" data-id="batchDelay" placeholder="5000" value="${esc(state.batchDelay)}"${dis}></label>
+          <label class="field"><span>Max queue</span><input type="text" data-id="batchQueue" placeholder="2048" value="${esc(state.batchQueue)}"${dis}></label>
+          <label class="field"><span>Batch size</span><input type="text" data-id="batchSize" placeholder="512" value="${esc(state.batchSize)}"${dis}></label>
+        </div></div></div>`;
+      }
+    }
+    h += "</div></details>";
+  }
+  sidebar.innerHTML = h;
+}
+
+sidebar.addEventListener("change", e=>{
+  const id = e.target.dataset.id; if(!id) return;
+  state[id] = e.target.type==="checkbox" ? e.target.checked : e.target.value;
+  update(true);
+});
+sidebar.addEventListener("input", e=>{
+  const id = e.target.dataset.id; if(!id || e.target.type==="checkbox" || e.target.tagName==="SELECT") return;
+  state[id] = e.target.value;
+  update(false);   // don't re-render sidebar while typing (keeps focus)
+});
+sidebar.addEventListener("click", e=>{
+  const chip = e.target.closest(".chip");
+  if(chip && !chip.closest(".row.disabled")){
+    const arr = state[chip.dataset.chip], v = chip.dataset.val, i = arr.indexOf(v);
+    if(i>=0) arr.splice(i,1); else arr.push(v);
+    update(true); return;
+  }
+  const a = e.target.closest("[data-action]");
+  if(a){
+    for(const l of LIMITS) state[l.id] = a.dataset.action==="suggest" ? l.suggest : "";
+    update(true); return;
+  }
+  const p = e.target.closest("[data-preset]");
+  if(p){ state = Object.assign(clone(DEFAULTS), clone(PRESETS[p.dataset.preset])); update(true); toast("Preset applied: "+p.dataset.preset); }
+});
+
+
+/* ------------------------------------------------------------------ *
+ * Highlighting
+ * ------------------------------------------------------------------ */
+const KW = new Set("using var new return if else true false null is not and or out typeof const static class public private void string object bool int double".split(" "));
+function hlCs(line){
+  const re = /(\/\/.*$)|("(?:[^"\\]|\\.)*")|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)(?=\s*[(<])|([A-Za-z_][A-Za-z0-9_]*)/g;
+  let out = "", last = 0, m;
+  while((m = re.exec(line))){
+    out += esc(line.slice(last, m.index));
+    if(m[1]) out += `<span class="tk-com">${esc(m[1])}</span>`;
+    else if(m[2]) out += `<span class="tk-str">${esc(m[2])}</span>`;
+    else if(m[3]) out += `<span class="tk-num">${m[3]}</span>`;
+    else if(m[4]) out += KW.has(m[4]) ? `<span class="tk-kw">${m[4]}</span>` : (/^[A-Z]/.test(m[4]) && /^\s*</.test(line.slice(re.lastIndex)) ? `<span class="tk-type">${m[4]}</span>` : `<span class="tk-fn">${m[4]}</span>`);
+    else if(m[5]) out += KW.has(m[5]) ? `<span class="tk-kw">${m[5]}</span>` : (/^[A-Z]/.test(m[5]) && /^(Activity|ActivityStatusCode|StringComparison|HttpMethods|Path|AppContext|OtlpExportProtocol|KeyValuePair|Uri|Program)$/.test(m[5]) ? `<span class="tk-type">${m[5]}</span>` : esc(m[5]));
+    last = re.lastIndex;
+  }
+  return out + esc(line.slice(last));
+}
+function hlGeneric(line){
+  if(/^\s*#/.test(line)) return `<span class="tk-com">${esc(line)}</span>`;
+  if(/<!--/.test(line)) return esc(line).replace(/(&lt;!--.*?--&gt;)/g,'<span class="tk-com">$1</span>').replace(/(&quot;[^&]*?&quot;)/g,'<span class="tk-str">$1</span>');
+  return esc(line).replace(/(&quot;.*?&quot;|"[^"]*")/g,'<span class="tk-str">$1</span>').replace(/^(\s*-?\s*)([A-Za-z_]+)(:)/,'$1<span class="tk-fn">$2</span>$3');
+}
+
+/* ------------------------------------------------------------------ *
+ * Output
+ * ------------------------------------------------------------------ */
+let tab = "program";
+const prev = {};
+const GEN = { program:()=>genProgram(state), packages:()=>genPackages(state), config:()=>genConfig(state) };
+const LABEL = { program:"Program.cs snippet", packages:"package references", config:"env / appsettings" };
+
+function renderPane(name){
+  const el = document.getElementById("code-"+name);
+  const text = GEN[name]();
+  if(prev[name] && prev[name].join("\n")===text) return;   // unchanged: keep scroll position and no flash
+  const ls = text.split("\n");
+  const old = prev[name] ? new Set(prev[name]) : null;
+  const hl = name==="program" ? hlCs : hlGeneric;
+  el.innerHTML = ls.map(l=>`<span class="ln${old && l.trim() && !old.has(l) ? " flash":""}">${hl(l)||" "}</span>`).join("");
+  prev[name] = ls;
+  if(old) setTimeout(()=>el.querySelectorAll(".flash").forEach(e=>e.classList.remove("flash")), 900);
+}
+function renderCode(){ Object.keys(GEN).forEach(renderPane); }
+function renderChecks(){
+  const c = genChecks(state);
+  document.getElementById("checks").innerHTML = c.length
+    ? `<h3>Checks (${c.length})</h3>` + c.map(([k,t])=>`<div class="check ${k}">${t}</div>`).join("")
+    : `<h3>Checks</h3><div class="check info">No findings for this configuration.</div>`;
+}
+function update(rerenderSidebar){
+  if(rerenderSidebar) renderSidebar();
+  else document.querySelectorAll("details.group").forEach(d=>{
+    const g = GROUPS.find(x=>x.id===d.dataset.id); const b = d.querySelector(".badge");
+    if(g && g.badge && b) b.textContent = g.badge()||"";
+  });
+  renderCode(); renderChecks(); save();
+  try{ history.replaceState(null,"",location.pathname+location.search); }catch(e){}
+}
+
+document.getElementById("tabs").addEventListener("click", e=>{
+  const t = e.target.closest(".tab"); if(!t) return;
+  document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on", x===t));
+  tab = t.dataset.tab;
+  document.querySelectorAll(".pane").forEach(p=>p.classList.toggle("on", p.dataset.pane===tab));
+});
+document.getElementById("panes").addEventListener("click", e=>{
+  const b = e.target.closest("[data-copy]"); if(!b) return;
+  copyText(GEN[b.dataset.copy](), "Copied "+LABEL[b.dataset.copy]);
+});
+function copyText(t, msg){
+  const done = ()=>toast(msg);
+  if(navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, ()=>fallback());
+  else fallback();
+  function fallback(){ const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+}
+document.getElementById("btnCopy").onclick = ()=>copyText(GEN[tab](), "Copied "+LABEL[tab]);
+document.getElementById("btnShare").onclick = ()=>{
+  const h = btoa(unescape(encodeURIComponent(JSON.stringify(state))));
+  copyText(location.href.split("#")[0]+"#"+h, "Config link copied — opening it restores this setup");
+};
+document.getElementById("btnRun").onclick = ()=>{
+  // Opened from variants/07-otel-config-tester/configurator/ -> absolute path to scripts/run.sh,
+  // so the command works from any directory. Anywhere else: assume the shell is in scripts/.
+  const h = btoa(unescape(encodeURIComponent(JSON.stringify(state))));
+  let cmd = "./run.sh";
+  if(location.protocol==="file:"){
+    const p = decodeURIComponent(location.pathname);
+    if(/\/configurator\/[^/]*$/.test(p)) cmd = "'" + p.replace(/\/configurator\/[^/]*$/, "/scripts/run.sh").replace(/'/g,"'\\''") + "'";
+  }
+  copyText(cmd+" '"+h+"'", "Run command copied — paste it into a terminal");
+};
+document.getElementById("btnReset").onclick = ()=>{ state = clone(DEFAULTS); update(true); toast("Reset to defaults"); };
+document.getElementById("btnTheme").onclick = ()=>{
+  const r = document.documentElement;
+  const dark = r.dataset.theme ? r.dataset.theme==="dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  r.dataset.theme = dark ? "light" : "dark";
+};
+let tt;
+function toast(m){ const t=document.getElementById("toast"); t.textContent=m; t.classList.add("show"); clearTimeout(tt); tt=setTimeout(()=>t.classList.remove("show"),1800); }
+
+renderSidebar(); renderCode(); renderChecks();
+})();
+</script>
+</body>
+</html>

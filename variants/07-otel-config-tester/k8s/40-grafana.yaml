@@ -1,0 +1,595 @@
+# Grafana for 07-otel-config-tester.
+#
+# In-cluster and dedicated to this variant, like variants 04 and 05, so the VM
+# Grafana stays untouched. ClickHouse is reached the way the collector reaches
+# it: host.docker.internal:9000. One datasource and one dashboard, both
+# provisioned from this file; nothing is clicked by hand.
+#
+# The datasource's traces settings (jsonData.traces) point Explore's trace
+# query builder at otel_config_tester.otel_traces, so Explore -> ClickHouse ->
+# query type "Traces" works without typing SQL.
+#
+# Port-forward: scripts/05-port-forward.sh -> http://localhost:3003 (no login).
+# The dashboard allows UI edits (allowUiUpdates), but a pod restart reloads
+# this file. To keep a change, export the dashboard JSON and paste it below.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: 07-otel-config-tester
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: ClickHouse-ConfigTester
+        uid: clickhouse-ct
+        type: grafana-clickhouse-datasource
+        access: proxy
+        isDefault: true
+        editable: true
+        jsonData:
+          host: host.docker.internal
+          port: 9000
+          protocol: native
+          username: otel
+          defaultDatabase: otel_config_tester
+          traces:
+            defaultDatabase: otel_config_tester
+            defaultTable: otel_traces
+            otelEnabled: true
+            otelVersion: latest
+        secureJsonData:
+          password: otelpass
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: 07-otel-config-tester
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: otel-config-tester
+        orgId: 1
+        folder: Variants
+        type: file
+        disableDeletion: false
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-ct
+  namespace: 07-otel-config-tester
+data:
+  07-otel-config-tester.json: |
+    {
+      "uid": "otel-config-tester",
+      "title": "OTel config tester",
+      "tags": [
+        "variants",
+        "07"
+      ],
+      "editable": true,
+      "graphTooltip": 0,
+      "schemaVersion": 39,
+      "version": 1,
+      "time": {
+        "from": "now-3h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "refresh": "",
+      "annotations": {
+        "list": []
+      },
+      "links": [],
+      "fiscalYearStartMonth": 0,
+      "weekStart": "",
+      "templating": {
+        "list": [
+          {
+            "name": "run",
+            "label": "run",
+            "type": "query",
+            "datasource": {
+              "type": "grafana-clickhouse-datasource",
+              "uid": "clickhouse-ct"
+            },
+            "refresh": 2,
+            "hide": 0,
+            "includeAll": false,
+            "multi": false,
+            "sort": 0,
+            "definition": "SELECT ResourceAttributes['test.run.id'] AS run FROM otel_config_tester.otel_traces WHERE $__timeFilter(Timestamp) AND run != '' GROUP BY run ORDER BY max(Timestamp) DESC",
+            "query": "SELECT ResourceAttributes['test.run.id'] AS run FROM otel_config_tester.otel_traces WHERE $__timeFilter(Timestamp) AND run != '' GROUP BY run ORDER BY max(Timestamp) DESC",
+            "current": {},
+            "options": []
+          },
+          {
+            "name": "traceId",
+            "label": "traceId",
+            "type": "textbox",
+            "hide": 0,
+            "query": "",
+            "current": {
+              "text": "",
+              "value": ""
+            },
+            "options": [
+              {
+                "selected": true,
+                "text": "",
+                "value": ""
+              }
+            ],
+            "description": "Set by clicking a trace_id in 'Traces'."
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "How to read this dashboard",
+          "type": "text",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 6
+          },
+          "description": "",
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### One configuration, one run\n\n`scripts/run.sh` builds the probe app with a generated OpenTelemetry configuration, deploys it, and sends a fixed set of requests (`scripts/06-probe.sh`). Every span of that run carries the resource attribute **`test.run.id`**. Pick a run in the **run** drop-down at the top, or click one in *Runs*.\n\nRead top to bottom: **Runs** compares configurations (span count, spans per trace, attribute size). **Span shapes** shows which instrumentations produced what (scope, kind, name). **Traces** lists the traces of the run, the deepest first \u2014 click a `trace_id` to show it in the **Trace** panel. The bottom row shows attribute keys with their longest value (span limits), events and links, and the resource attributes.\n\nEverything here is plain SQL against `otel_config_tester.otel_traces`. Edit a panel to see its query, or copy it into `clickhouse-client`."
+          }
+        },
+        {
+          "id": 2,
+          "title": "Runs",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 6,
+            "w": 24,
+            "h": 8
+          },
+          "description": "One row per run. avg/max_attr_bytes = characters in span attribute keys + values: a rough measure of row width, and what the span limits cap.",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ct"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-ct"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "queryType": "table",
+              "pluginVersion": "4.15.0",
+              "rawSql": "SELECT\n  ResourceAttributes['test.run.id'] AS run,\n  any(ResourceAttributes['test.config.name']) AS config,\n  any(ServiceName) AS service,\n  min(Timestamp) AS first_span,\n  count() AS spans,\n  uniqExact(TraceId) AS traces,\n  countIf(ParentSpanId = '') AS root_spans,\n  round(count() / uniqExact(TraceId), 1) AS spans_per_trace,\n  countIf(StatusCode = 'Error') AS error_spans,\n  round(avg(length(SpanAttributes)), 1) AS avg_attr_count,\n  round(avg(arraySum(arrayMap((k, v) -> length(k) + length(v), mapKeys(SpanAttributes), mapValues(SpanAttributes))))) AS avg_attr_bytes,\n  max(arraySum(arrayMap((k, v) -> length(k) + length(v), mapKeys(SpanAttributes), mapValues(SpanAttributes)))) AS max_attr_bytes\nFROM otel_config_tester.otel_traces\nWHERE $__timeFilter(Timestamp)\n  AND ResourceAttributes['test.run.id'] != ''\nGROUP BY run\nORDER BY first_span DESC\nLIMIT 50",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "run"
+                },
+                "properties": [
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Select this run",
+                        "url": "?var-run=${__value.raw}&${__url_time_range}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "avg_attr_bytes"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "decbytes"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "max_attr_bytes"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "decbytes"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          }
+        },
+        {
+          "id": 3,
+          "title": "Span shapes in run ${run}",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 14,
+            "w": 24,
+            "h": 9
+          },
+          "description": "Which instrumentation (scope) produced which spans. as_root > 0 for a CLIENT or db span means its parent was not recorded (filtered, not instrumented, or an unlistened ActivitySource).",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ct"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-ct"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "queryType": "table",
+              "pluginVersion": "4.15.0",
+              "rawSql": "SELECT\n  ScopeName AS scope,\n  SpanKind AS kind,\n  SpanName AS span,\n  count() AS spans,\n  countIf(ParentSpanId = '') AS as_root,\n  round(avg(Duration) / 1e6, 2) AS avg_ms,\n  round(quantile(0.95)(Duration) / 1e6, 2) AS p95_ms,\n  countIf(StatusCode = 'Error') AS errors,\n  countIf(has(Events.Name, 'exception')) AS with_exception_event\nFROM otel_config_tester.otel_traces\nWHERE $__timeFilter(Timestamp) AND ResourceAttributes['test.run.id'] = '${run}'\nGROUP BY scope, kind, span\nORDER BY scope, spans DESC",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          }
+        },
+        {
+          "id": 4,
+          "title": "Spans over time in run ${run}, by scope",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 23,
+            "w": 24,
+            "h": 6
+          },
+          "description": "The probe burst, then the background noise: a /health span every 10 s (unless filtered) and a 'Stock sync' every 30 s (if the custom source is listened to).",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ct"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-ct"
+              },
+              "editorType": "sql",
+              "format": 0,
+              "queryType": "timeseries",
+              "pluginVersion": "4.15.0",
+              "rawSql": "SELECT\n  toStartOfInterval(Timestamp, INTERVAL 10 SECOND) AS time,\n  ScopeName AS scope,\n  count() AS spans\nFROM otel_config_tester.otel_traces\nWHERE $__timeFilter(Timestamp) AND ResourceAttributes['test.run.id'] = '${run}'\nGROUP BY time, scope\nORDER BY time",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "bars",
+                "fillOpacity": 60,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 5,
+          "title": "Traces in run ${run} (deepest first)",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 29,
+            "w": 10,
+            "h": 14
+          },
+          "description": "Click a trace_id to show it in the Trace panel. An empty root_span means the trace's root span is not in ClickHouse.",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ct"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-ct"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "queryType": "table",
+              "pluginVersion": "4.15.0",
+              "rawSql": "SELECT\n  TraceId AS trace_id,\n  anyIf(SpanName, ParentSpanId = '') AS root_span,\n  count() AS spans,\n  round((max(toUnixTimestamp64Nano(Timestamp) + Duration) - min(toUnixTimestamp64Nano(Timestamp))) / 1e6, 1) AS duration_ms,\n  countIf(StatusCode = 'Error') AS errors\nFROM otel_config_tester.otel_traces\nWHERE $__timeFilter(Timestamp) AND ResourceAttributes['test.run.id'] = '${run}'\nGROUP BY trace_id\nORDER BY spans DESC, duration_ms DESC\nLIMIT 300",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "trace_id"
+                },
+                "properties": [
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Show this trace",
+                        "url": "?var-run=${run}&var-traceId=${__value.raw}&${__url_time_range}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          }
+        },
+        {
+          "id": 6,
+          "title": "Trace ${traceId}",
+          "type": "traces",
+          "gridPos": {
+            "x": 10,
+            "y": 29,
+            "w": 14,
+            "h": 14
+          },
+          "description": "Waterfall of one trace. Span tags include the scope, kind and status. If this panel stays empty, open Explore, choose the ClickHouse data source, query type 'Traces', and paste the trace id.",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ct"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-ct"
+              },
+              "editorType": "sql",
+              "format": 3,
+              "queryType": "traces",
+              "pluginVersion": "4.15.0",
+              "rawSql": "SELECT\n  TraceId AS traceID,\n  SpanId AS spanID,\n  ParentSpanId AS parentSpanID,\n  ServiceName AS serviceName,\n  SpanName AS operationName,\n  toUnixTimestamp64Nano(Timestamp) / 1000000 AS startTime,\n  Duration / 1000000 AS duration,\n  arrayConcat(\n    [map('key', 'otel.scope.name', 'value', ScopeName), map('key', 'span.kind', 'value', SpanKind),\n     map('key', 'otel.status_code', 'value', StatusCode), map('key', 'otel.status_description', 'value', StatusMessage)],\n    arrayMap(key -> map('key', key, 'value', SpanAttributes[key]), mapKeys(SpanAttributes))) AS tags,\n  arrayMap(key -> map('key', key, 'value', ResourceAttributes[key]), mapKeys(ResourceAttributes)) AS serviceTags\nFROM otel_config_tester.otel_traces\nWHERE TraceId = '${traceId}'\nORDER BY startTime ASC",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 7,
+          "title": "Span attribute keys in run ${run}",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 43,
+            "w": 12,
+            "h": 12
+          },
+          "description": "max_value_length shows OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT at work (probe.long_value is 20 000 characters when not cut; db.query.text of /api/db/long-query about 5 000). Captured request headers appear as http.request.header.*.",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ct"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-ct"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "queryType": "table",
+              "pluginVersion": "4.15.0",
+              "rawSql": "SELECT\n  ScopeName AS scope,\n  key,\n  count() AS spans,\n  max(length(SpanAttributes[key])) AS max_value_length,\n  any(substring(SpanAttributes[key], 1, 100)) AS sample_value\nFROM otel_config_tester.otel_traces\nARRAY JOIN mapKeys(SpanAttributes) AS key\nWHERE $__timeFilter(Timestamp) AND ResourceAttributes['test.run.id'] = '${run}'\nGROUP BY scope, key\nORDER BY max_value_length DESC, scope, key\nLIMIT 500",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          }
+        },
+        {
+          "id": 8,
+          "title": "Events and links in run ${run}",
+          "type": "table",
+          "gridPos": {
+            "x": 12,
+            "y": 43,
+            "w": 12,
+            "h": 12
+          },
+          "description": "The span-count limits: events per span, attributes per event, links per span, attributes per link, attributes per span. /api/wide asks for 200 attributes, 40 events x 20 attributes and 40 links x 20 attributes.",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ct"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-ct"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "queryType": "table",
+              "pluginVersion": "4.15.0",
+              "rawSql": "SELECT\n  SpanName AS span,\n  count() AS spans,\n  max(length(Events.Name)) AS max_events,\n  max(arrayMax(arrayMap(a -> length(a), Events.Attributes))) AS max_attrs_per_event,\n  max(length(Links.TraceId)) AS max_links,\n  max(arrayMax(arrayMap(a -> length(a), Links.Attributes))) AS max_attrs_per_link,\n  max(length(SpanAttributes)) AS max_span_attrs,\n  arrayStringConcat(arraySlice(arraySort(groupUniqArrayArray(Events.Name)), 1, 6), ', ') AS event_names\nFROM otel_config_tester.otel_traces\nWHERE $__timeFilter(Timestamp) AND ResourceAttributes['test.run.id'] = '${run}'\nGROUP BY span\nHAVING max_events > 0 OR max_links > 0 OR max_span_attrs > 30\nORDER BY spans DESC",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          }
+        },
+        {
+          "id": 9,
+          "title": "Resource attributes of run ${run}",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 55,
+            "w": 24,
+            "h": 7
+          },
+          "description": "service.*, deployment.environment.name, k8s.* and extra attributes from the configuration, plus test.run.id / test.config.name added by the harness.",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-ct"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-clickhouse-datasource",
+                "uid": "clickhouse-ct"
+              },
+              "editorType": "sql",
+              "format": 1,
+              "queryType": "table",
+              "pluginVersion": "4.15.0",
+              "rawSql": "SELECT\n  key,\n  any(ResourceAttributes[key]) AS value,\n  uniqExact(ResourceAttributes[key]) AS distinct_values\nFROM otel_config_tester.otel_traces\nARRAY JOIN mapKeys(ResourceAttributes) AS key\nWHERE $__timeFilter(Timestamp) AND ResourceAttributes['test.run.id'] = '${run}'\nGROUP BY key\nORDER BY key",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: 07-otel-config-tester
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-clickhouse-datasource"
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "admin"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Editor"
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: "/var/lib/grafana/dashboards/07-otel-config-tester.json"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboard-ct
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: 07-otel-config-tester
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
