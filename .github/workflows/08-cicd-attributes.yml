@@ -1,0 +1,194 @@
+# Variant 08-cicd-attributes: build the three baseline apps, bake facts that only
+# the pipeline knows into each image, push them to GHCR (GitHub Container Registry).
+#
+# This file has to live here, at the repo root, because GitHub only runs
+# workflows from .github/workflows/. Everything else of the variant is under
+# variants/08-cicd-attributes/.
+#
+# Azure DevOps equivalents of the values used below:
+#   github.run_number          -> $(Build.BuildNumber)
+#   github.sha                 -> $(Build.SourceVersion)
+#   github.ref_name            -> $(Build.SourceBranchName)
+#   server_url/repository      -> $(Build.Repository.Uri)
+#   github.workflow            -> $(Build.DefinitionName)
+#   github.run_id              -> $(Build.BuildId)
+#   .../actions/runs/<run_id>  -> $(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)
+#                                 (contains '=' -> must be percent-encoded or dropped, see "Compute" step)
+name: 08-cicd-attributes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - "variants/08-cicd-attributes/docker/**"
+      - ".github/workflows/08-cicd-attributes.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write   # push to ghcr.io with the built-in GITHUB_TOKEN
+
+concurrency:
+  group: 08-cicd-attributes-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    name: Compute build metadata
+    runs-on: ubuntu-latest
+    outputs:
+      image_prefix: ${{ steps.m.outputs.image_prefix }}
+      version: ${{ steps.m.outputs.version }}
+      ref_name: ${{ steps.m.outputs.ref_name }}
+      repo_url: ${{ steps.m.outputs.repo_url }}
+      pipeline: ${{ steps.m.outputs.pipeline }}
+      run_url: ${{ steps.m.outputs.run_url }}
+      created: ${{ steps.m.outputs.created }}
+    steps:
+      - name: Compute
+        id: m
+        env:
+          # Passed through env, never interpolated into the script text: a branch
+          # name is user-controlled input.
+          RAW_REF_NAME: ${{ github.ref_name }}
+          RAW_WORKFLOW: ${{ github.workflow }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        run: |
+          # OTEL_RESOURCE_ATTRIBUTES is "k=v,k=v". The .NET SDK drops any pair
+          # that contains a second '=', and a ',' would split a value in two.
+          # Replace both (and whitespace) so no attribute is lost silently.
+          clean() { printf '%s' "$1" | tr ',= \t' '____'; }
+
+          short_sha="${SHA:0:7}"
+          version="${RUN_NUMBER}-${short_sha}"
+          # Image names on ghcr.io must be lowercase.
+          prefix="ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/cicd-attributes"
+
+          {
+            echo "image_prefix=$prefix"
+            echo "version=$version"
+            echo "ref_name=$(clean "$RAW_REF_NAME")"
+            echo "repo_url=$(clean "$SERVER/$REPO")"
+            echo "pipeline=$(clean "$RAW_WORKFLOW")"
+            echo "run_url=$(clean "$SERVER/$REPO/actions/runs/$RUN_ID")"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Build metadata"
+            echo "| key | value |"
+            echo "|---|---|"
+            echo "| service.version | \`$version\` |"
+            echo "| vcs.ref.head.revision | \`$SHA\` |"
+            echo "| vcs.ref.head.name | \`$(clean "$RAW_REF_NAME")\` |"
+            echo "| cicd.pipeline.run.id | \`$RUN_ID\` |"
+            echo "| image prefix | \`$prefix\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { app: RatingApi, name: rating-api, naive: true }
+          - { app: QuoteApi,  name: quote-api,  naive: false }
+          - { app: QuoteWeb,  name: quote-web,  naive: false }
+    env:
+      IMAGE: ${{ needs.meta.outputs.image_prefix }}/${{ matrix.name }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # One build-arg per attribute. Same names as the ARGs in the Dockerfile.
+      # Build args are passed explicitly here. (Azure DevOps trap: Docker@2 with
+      # command: buildAndPush IGNORES `arguments` - split it into build + push.)
+      - name: Build and push (final - the recommended pattern)
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.app }}
+          file: variants/08-cicd-attributes/docker/Dockerfile
+          target: final
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false   # keeps the tag a plain multi-arch index; kind pulls it without surprises
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            APP=${{ matrix.app }}
+            SERVICE_VERSION=${{ env.VERSION }}
+            VCS_REVISION=${{ github.sha }}
+            VCS_REF_NAME=${{ needs.meta.outputs.ref_name }}
+            VCS_REPOSITORY_URL=${{ needs.meta.outputs.repo_url }}
+            CICD_PIPELINE_NAME=${{ needs.meta.outputs.pipeline }}
+            CICD_RUN_ID=${{ github.run_id }}
+            CICD_RUN_URL=${{ needs.meta.outputs.run_url }}
+          # OCI labels: the same facts, readable with `docker inspect` without
+          # running anything. `source` also links the package to this repo.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.created=${{ needs.meta.outputs.created }}
+            org.opencontainers.image.title=${{ matrix.name }}
+            org.opencontainers.image.description=Variant 08-cicd-attributes (target final)
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Build and push (naive - the trap, rating-api only)
+        if: ${{ matrix.naive }}
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.app }}
+          file: variants/08-cicd-attributes/docker/Dockerfile
+          target: naive
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}-naive
+          build-args: |
+            APP=${{ matrix.app }}
+            SERVICE_VERSION=${{ env.VERSION }}
+            VCS_REVISION=${{ github.sha }}
+            VCS_REF_NAME=${{ needs.meta.outputs.ref_name }}
+            VCS_REPOSITORY_URL=${{ needs.meta.outputs.repo_url }}
+            CICD_PIPELINE_NAME=${{ needs.meta.outputs.pipeline }}
+            CICD_RUN_ID=${{ github.run_id }}
+            CICD_RUN_URL=${{ needs.meta.outputs.run_url }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}-naive
+            org.opencontainers.image.created=${{ needs.meta.outputs.created }}
+            org.opencontainers.image.title=${{ matrix.name }}
+            org.opencontainers.image.description=Variant 08-cicd-attributes (target naive - the trap)
+          cache-from: type=gha,scope=${{ matrix.name }}
+
+      - name: Show baked environment
+        run: |
+          {
+            echo "### ${{ matrix.name }}"
+            echo '```'
+            docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Image}}' \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d.get("linux/amd64",d); print("\n".join(e for e in d["config"]["Env"] if e.startswith("OTEL_")))' \
+              || echo "(could not read image config)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

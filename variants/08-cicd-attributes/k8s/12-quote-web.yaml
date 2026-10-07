@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quote-web
+  namespace: 08-cicd-attributes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quote-web
+      flavour: final
+  template:
+    metadata:
+      labels:
+        app: quote-web
+        flavour: final
+    spec:
+      containers:
+        - name: quote-web
+          # Rendered by scripts/04-deploy.sh (placeholders -> build/). The tag is
+          # the CI version (<run_number>-<short sha>), never :latest, so every
+          # deploy of a new build replaces the pods.
+          image: __IMAGE_PREFIX__/quote-web:__TAG__
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            # DEPLOY-time attributes only. The build-time ones are in the image
+            # (OTEL_BUILD_ATTRIBUTES) and are appended at container start.
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.namespace.name=08-cicd-attributes,k8s.pod.name=$(POD_NAME),deployment.environment.name=lab"
+            - name: Services__QuoteBaseUrl
+              value: "http://quote-api:8080"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quote-web
+  namespace: 08-cicd-attributes
+spec:
+  selector:
+    app: quote-web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
