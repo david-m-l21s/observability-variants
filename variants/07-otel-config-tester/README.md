@@ -131,6 +131,18 @@ Every request carries `x-tenant-id`, `x-correlation-id`, `Authorization` and `Co
 | sampling | 200 × `GET /api/products/{sku}`, 8 in parallel (not with `--quick`) | sampler ratio: at 0.25, expect about 50 ± 18 of them |
 | flush | `POST /probe/flush` (`TracerProvider.ForceFlush`), then 3 seconds of waiting | — |
 
+### OTLP endpoint: three ways, gRPC only
+
+The exporter always uses **gRPC** to the collector's port 4317. gRPC is the .NET SDK's default protocol, so the generated code never sets a protocol, and there is no `OTEL_EXPORTER_OTLP_PROTOCOL`. "Endpoint configured via" in the Export group has three options:
+
+| Option | Program.cs | Where the value lives | Override per environment |
+|---|---|---|---|
+| Environment variable (default) | `AddOtlpExporter()` | `OTEL_EXPORTER_OTLP_ENDPOINT` in the Deployment | the same env var |
+| appsettings.json | `var otlpEndpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"]`, then `AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint))` | `appsettings.json` → `OpenTelemetry:Otlp:Endpoint` | `OpenTelemetry__Otlp__Endpoint` |
+| Hard-coded | `AddOtlpExporter(o => o.Endpoint = new Uri("http://otel-collector:4317"))` | Program.cs | none (rebuild) |
+
+All three take the same value, `http://otel-collector:4317`. With gRPC the SDK never appends a path, so the value means the same thing in every mode. One difference remains: an endpoint set in code takes precedence, so in the appsettings and hard-coded modes `OTEL_EXPORTER_OTLP_ENDPOINT` is ignored. The configurator reports an error for an endpoint with port 4318 or a `/v1/traces` path, because those belong to HTTP/protobuf.
+
 ### Changes to the configurator
 
 The copy in `configurator/` differs from the uploaded version in three ways:
@@ -222,6 +234,7 @@ WHERE ResourceAttributes['test.run.id'] = '<run id>'
 | `blazor-server`, `blazor-server-net10` | the Blazor presets. The probe is not a Blazor app, so the SignalR and Razor switches have nothing to switch off here. Only the path filters show an effect. |
 | `worker-service` | preset "Worker service": no ASP.NET Core instrumentation |
 | `shop-api-full` | "API + EF Core" plus the custom source `T2A.Shop`, header capture, noise and CORS filters, an outgoing filter, and the suggested span limits |
+| `shop-api-appsettings` | the same as `shop-api-full`, but the OTLP endpoint comes from appsettings.json (`OpenTelemetry:Otlp:Endpoint`) and is set in `WithTracing`. Its traces should match `shop-api-full` |
 
 ## Files
 

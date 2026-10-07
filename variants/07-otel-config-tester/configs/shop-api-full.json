@@ -46,7 +46,7 @@
   "otlp": true,
   "otlpEndpointMode": "env",
   "otlpEndpoint": "http://otel-collector:4317",
-  "otlpProtocol": "grpc",
+  "otlpConfigKey": "OpenTelemetry:Otlp:Endpoint",
   "batchDelay": "",
   "batchQueue": "",
   "batchSize": "",

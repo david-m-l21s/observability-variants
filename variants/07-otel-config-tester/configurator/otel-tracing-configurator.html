@@ -177,7 +177,7 @@ const DEFAULTS = {
   // custom & messaging
   sources:"", massTransit:false, azure:false,
   // export
-  otlp:true, otlpEndpointMode:"env", otlpEndpoint:"http://otel-collector:4317", otlpProtocol:"grpc",
+  otlp:true, otlpEndpointMode:"env", otlpEndpoint:"http://otel-collector:4317", otlpConfigKey:"OpenTelemetry:Otlp:Endpoint",
   batchDelay:"", batchQueue:"", batchSize:"",
   console:"dev",
   // limits (empty = SDK default)
@@ -232,11 +232,10 @@ function genProgram(s){
   const needDiag = (s.aspnet&&(s.aspEnrichEx||hdrs.length)) || (s.http&&s.httpEnrichEx);
   const batch = {d:num(s.batchDelay), q:num(s.batchQueue), b:num(s.batchSize)};
   const hasBatch = batch.d||batch.q||batch.b;
-  const otlpCode = s.otlp && (s.otlpEndpointMode==="code" || hasBatch);
-  const needExporterNs = s.otlp && (s.otlpEndpointMode==="code");
+  const otlpFromConfig = s.otlp && s.otlpEndpointMode==="appsettings";
+  const otlpKey = otlpConfigKey(s);
 
   if(needDiag) L("using System.Diagnostics;");
-  if(needExporterNs) L("using OpenTelemetry.Exporter;");
   L("using OpenTelemetry.Resources;");
   L("using OpenTelemetry.Trace;");
   L();
@@ -415,26 +414,31 @@ function genProgram(s){
   if(s.otlp||s.console!=="off"){
     section("Export");
     if(s.otlp){
-      if(!otlpCode){
-        if(s.comments) L("// Endpoint + protocol from OTEL_EXPORTER_OTLP_* (see Env tab).");
-        L("tracing.AddOtlpExporter();");
-      }else{
+      // gRPC only: OtlpExportProtocol.Grpc is the SDK default, so the protocol is never set.
+      let ep = null;                                   // C# expression for o.Endpoint, or null
+      if(s.otlpEndpointMode==="code") ep = `new Uri(${cs(s.otlpEndpoint.trim()||"http://localhost:4317")})`;
+      if(otlpFromConfig){
+        if(s.comments){
+          L(`// Endpoint from appsettings.json "${otlpKey}" (see Env / appsettings tab).`);
+          L(`// Override per environment without a rebuild: env var ${otlpKey.replace(/:/g,"__")}.`);
+        }
+        L(`var otlpEndpoint = builder.Configuration[${cs(otlpKey)}]`);
+        L(`    ?? throw new InvalidOperationException(${cs("Missing configuration value "+otlpKey)});`);
+        ep = "new Uri(otlpEndpoint)";
+      }else if(s.comments){
+        L(s.otlpEndpointMode==="env" ? "// Endpoint from OTEL_EXPORTER_OTLP_ENDPOINT (see Env tab). Protocol: gRPC." : "// Hard-coded endpoint. Protocol: gRPC.");
+      }
+      const body = [];
+      if(ep) body.push(`o.Endpoint = ${ep};`);
+      if(batch.d) body.push(`o.BatchExportProcessorOptions.ScheduledDelayMilliseconds = ${batch.d};`);
+      if(batch.q) body.push(`o.BatchExportProcessorOptions.MaxQueueSize = ${batch.q};`);
+      if(batch.b) body.push(`o.BatchExportProcessorOptions.MaxExportBatchSize = ${batch.b};`);
+      if(!body.length) L("tracing.AddOtlpExporter();");
+      else if(body.length===1) L(`tracing.AddOtlpExporter(o => ${body[0].replace(/;$/,"")});`);
+      else {
         L("tracing.AddOtlpExporter(o =>");
         L("{");
-        ind = 12;
-        if(s.otlpEndpointMode==="code"){
-          let ep = s.otlpEndpoint.trim()||"http://localhost:4317";
-          if(s.otlpProtocol==="http/protobuf" && !/\/v1\/traces\/?$/.test(ep)){
-            ep = ep.replace(/\/+$/,"")+"/v1/traces";
-            if(s.comments) L("// Set in code, the HTTP endpoint needs the full signal path.");
-          }
-          L(`o.Endpoint = new Uri(${cs(ep)});`);
-          L(`o.Protocol = OtlpExportProtocol.${s.otlpProtocol==="grpc"?"Grpc":"HttpProtobuf"};`);
-        }
-        if(batch.d) L(`o.BatchExportProcessorOptions.ScheduledDelayMilliseconds = ${batch.d};`);
-        if(batch.q) L(`o.BatchExportProcessorOptions.MaxQueueSize = ${batch.q};`);
-        if(batch.b) L(`o.BatchExportProcessorOptions.MaxExportBatchSize = ${batch.b};`);
-        ind = 8;
+        body.forEach(x=>L("    "+x));
         L("});");
       }
     }
@@ -505,7 +509,6 @@ function genEnv(s){
   const F = (name,fieldPath) => env.push({name, fieldPath});
   if(s.otlp && s.otlpEndpointMode==="env"){
     E("OTEL_EXPORTER_OTLP_ENDPOINT", s.otlpEndpoint.trim()||"http://otel-collector:4317");
-    E("OTEL_EXPORTER_OTLP_PROTOCOL", s.otlpProtocol);
   }
   if((s.efcore||s.sqlclient) && s.efSemconv) E("OTEL_SEMCONV_STABILITY_OPT_IN","database");
   for(const l of LIMITS){ const v = num(s[l.id]); if(v) E(l.env, v); }
@@ -519,8 +522,20 @@ function genEnv(s){
 }
 /* appsettings.json fragment to merge, or null. */
 function genAppsettings(s){
-  if(s.efcore && s.efLogWarn) return {Logging:{LogLevel:{"Microsoft.EntityFrameworkCore.Database.Command":"Warning"}}};
-  return null;
+  const app = {};
+  if(s.efcore && s.efLogWarn) app.Logging = {LogLevel:{"Microsoft.EntityFrameworkCore.Database.Command":"Warning"}};
+  if(s.otlp && s.otlpEndpointMode==="appsettings"){
+    // "OpenTelemetry:Otlp:Endpoint" -> {"OpenTelemetry":{"Otlp":{"Endpoint":...}}}
+    const parts = otlpConfigKey(s).split(":"), last = parts.pop();
+    let node = app;
+    for(const part of parts) node = node[part] = node[part] || {};
+    node[last] = s.otlpEndpoint.trim()||"http://otel-collector:4317";
+  }
+  return Object.keys(app).length ? app : null;
+}
+function otlpConfigKey(s){
+  const v = String(s.otlpConfigKey||"").trim().replace(/^:+|:+$/g,"");
+  return v || "OpenTelemetry:Otlp:Endpoint";
 }
 function genConfig(s){
   const env = [];
@@ -535,7 +550,7 @@ function genConfig(s){
   const app = genAppsettings(s);
   if(app){
     out.push("", "# ---- appsettings.json ---------------------------------------------------",
-      "# Merge into the \"Logging\" section:",
+      Object.keys(app).length===1 && app.Logging ? "# Merge into the \"Logging\" section:" : "# Merge into appsettings.json:",
       ...JSON.stringify(app, null, 2).split("\n"));
   }
   return out.join("\n");
@@ -563,6 +578,8 @@ function genChecks(s){
   if(s.efcore && (s.sqlclient||s.npgsql)) W("EF Core + a driver-level instrumentation both on: every query produces two spans. Pick one.");
   if(s.efcore && !s.efSemconv) I("EF Core instrumentation emits the OLD db attributes (<code>db.statement</code>, span name = database name) without <code>OTEL_SEMCONV_STABILITY_OPT_IN=database</code>.");
   if(s.efcore) I("Query parameter values stay off (default). Do not enable <code>OTEL_DOTNET_EXPERIMENTAL_EFCORE_ENABLE_TRACE_DB_QUERY_PARAMETERS</code> — parameters are where personal data lives.");
+  if(s.otlp && s.otlpEndpointMode==="appsettings") I(`Endpoint comes from appsettings.json <code>${esc(otlpConfigKey(s))}</code>. Override it per environment with the env var <code>${esc(otlpConfigKey(s).replace(/:/g,"__"))}</code>. <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> is ignored, because the endpoint is set in code.`);
+  if(s.otlp && (/:4318\b/.test(s.otlpEndpoint) || /\/v1\/traces/.test(s.otlpEndpoint))) X("The exporter uses gRPC only: the endpoint is the collector's gRPC port 4317, without a path (e.g. <code>http://otel-collector:4317</code>). 4318 and /v1/traces belong to HTTP/protobuf.");
   if(s.otlp && s.otlpEndpointMode==="code") I("Endpoint is hard-coded. Env vars keep the image identical between VM, cluster and local runs.");
   if(s.filterExt && s.aspnet && s.aspFilter) I("<code>Path.HasExtension</code> also drops API routes containing a dot (e.g. <code>/api/v1.0/…</code>, <code>/files/report.pdf</code>).");
   if(["grpc","sqlclient","npgsql","redis"].some(k=>s[k])) I("Some selected packages have no pinned version here — see the <code>x.y.z</code> placeholders in the packages tab.");
@@ -673,9 +690,10 @@ const GROUPS = [
   ]},
   { id:"export", title:"Export", badge:()=>[state.otlp&&"OTLP",state.console!=="off"&&"Console"].filter(Boolean).join(" + ")||"none", items:[
     {id:"otlp", type:"check", label:"<code>AddOtlpExporter()</code>"},
-    {id:"otlpEndpointMode", type:"select", sub:true, label:"Endpoint & protocol configured via", options:[["env","Environment variables (recommended)"],["code","Hard-coded in Program.cs"]], when:()=>state.otlp},
-    {id:"otlpEndpoint", type:"text", sub:true, label:"Endpoint", when:()=>state.otlp},
-    {id:"otlpProtocol", type:"select", sub:true, label:"Protocol", options:[["grpc","gRPC (:4317)"],["http/protobuf","HTTP/protobuf (:4318)"]], when:()=>state.otlp},
+    {id:"otlpEndpointMode", type:"select", sub:true, label:"Endpoint configured via", options:[["env","Environment variable OTEL_EXPORTER_OTLP_ENDPOINT (recommended)"],["appsettings","appsettings.json, read in WithTracing"],["code","Hard-coded in Program.cs"]], when:()=>state.otlp,
+     hint:"Protocol is always gRPC (the SDK default). Env: the SDK reads the variable itself. appsettings.json: Program.cs reads one key and sets <code>o.Endpoint</code>. Same value in both."},
+    {id:"otlpConfigKey", type:"text", sub:true, label:"Configuration key", placeholder:"OpenTelemetry:Otlp:Endpoint", when:()=>state.otlp&&state.otlpEndpointMode==="appsettings"},
+    {id:"otlpEndpoint", type:"text", sub:true, label:"Endpoint (gRPC, port 4317)", when:()=>state.otlp},
     {id:"batch", type:"batch", sub:true, label:"Batch processor (empty = SDK default)", when:()=>state.otlp},
     {id:"console", type:"select", label:"Console exporter", options:[["off","Off"],["dev","Only in Development"],["always","Always"]],
      hint:"Prints every span to stdout. Useful locally, expensive and noisy in the cluster."}
@@ -768,7 +786,7 @@ function hlCs(line){
     else if(m[2]) out += `<span class="tk-str">${esc(m[2])}</span>`;
     else if(m[3]) out += `<span class="tk-num">${m[3]}</span>`;
     else if(m[4]) out += KW.has(m[4]) ? `<span class="tk-kw">${m[4]}</span>` : (/^[A-Z]/.test(m[4]) && /^\s*</.test(line.slice(re.lastIndex)) ? `<span class="tk-type">${m[4]}</span>` : `<span class="tk-fn">${m[4]}</span>`);
-    else if(m[5]) out += KW.has(m[5]) ? `<span class="tk-kw">${m[5]}</span>` : (/^[A-Z]/.test(m[5]) && /^(Activity|ActivityStatusCode|StringComparison|HttpMethods|Path|AppContext|OtlpExportProtocol|KeyValuePair|Uri|Program)$/.test(m[5]) ? `<span class="tk-type">${m[5]}</span>` : esc(m[5]));
+    else if(m[5]) out += KW.has(m[5]) ? `<span class="tk-kw">${m[5]}</span>` : (/^[A-Z]/.test(m[5]) && /^(Activity|ActivityStatusCode|StringComparison|HttpMethods|Path|AppContext|InvalidOperationException|KeyValuePair|Uri|Program)$/.test(m[5]) ? `<span class="tk-type">${m[5]}</span>` : esc(m[5]));
     last = re.lastIndex;
   }
   return out + esc(line.slice(last));

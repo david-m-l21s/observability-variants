@@ -89,4 +89,13 @@ SELECT ScopeName AS category, SeverityText AS severity, count() AS records
 FROM otel_logs
 WHERE Timestamp > now() - INTERVAL $MIN MINUTE AND ServiceName = 'quote-api'
 GROUP BY category, severity ORDER BY records DESC"
+q "7. Parameter VALUES per db span, newest first (only after ./07-switch.sh params).
+   Empty result = parameters are off, which is the safe default." "
+SELECT Timestamp, SpanName,
+       mapFilter((k, v) -> startsWith(k, 'db.query.parameter.'), SpanAttributes) AS parameters,
+       SpanAttributes['db.query.text'] AS query_text
+FROM otel_traces
+WHERE $WIN AND $ISDB
+  AND length(mapFilter((k, v) -> startsWith(k, 'db.query.parameter.'), SpanAttributes)) > 0
+ORDER BY Timestamp DESC LIMIT 15"
 echo

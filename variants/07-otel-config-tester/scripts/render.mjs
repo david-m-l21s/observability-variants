@@ -340,9 +340,7 @@ spec:
   else notes.push(`[probe] Custom spans use ActivitySource "${src.name}" (first entry of the configuration's source list).`);
   if (s.otlp) {
     const ep = s.otlpEndpoint.trim();
-    if (!/^https?:\/\/otel-collector(:\d+)?(\/|$)/.test(ep)) notes.push(`[probe] OTLP endpoint ${ep} is not the variant's collector (http://otel-collector:4317 or :4318). Spans will not reach ClickHouse.`);
-    if (s.otlpProtocol === "grpc" && /:4318/.test(ep)) notes.push("[probe] gRPC protocol against port 4318 (the HTTP port). Export will fail.");
-    if (s.otlpProtocol === "http/protobuf" && /:4317/.test(ep)) notes.push("[probe] HTTP/protobuf protocol against port 4317 (the gRPC port). Export will fail.");
+    if (!/^https?:\/\/otel-collector:4317\/?$/.test(ep)) notes.push(`[probe] OTLP endpoint ${ep} is not the variant's collector gRPC port (http://otel-collector:4317). Spans will not reach ClickHouse.`);
   } else notes.push("[probe] OTLP exporter is off: nothing will reach ClickHouse.");
   if (s.console === "dev" && aspnetEnv !== "Development") notes.push(`[probe] Console exporter is "only in Development", and this run is ${aspnetEnv}: no console output.`);
   fs.writeFileSync(path.join(gen, "checks.txt"), [...checks, ...notes].join("\n") + "\n");

@@ -193,6 +193,21 @@ no `db.query.summary`. That is what you get if you only add the package.
 
 Expect one `Microsoft.EntityFrameworkCore.Database.Command` record per db span.
 
+**5. The actual values (test data only).**
+
+```bash
+./07-switch.sh params
+./06-generate-load.sh 20
+./08-inspect.sh 5                 # section 7 shows them; section 3 flags them as LEAK
+./07-switch.sh params-off
+```
+
+Sets `OTEL_DOTNET_EXPERIMENTAL_EFCORE_ENABLE_TRACE_DB_QUERY_PARAMETERS=true`. Each
+db span then carries one `db.query.parameter.<name>` attribute per parameter, with
+the value as a string. It only works with the new conventions
+(`OTEL_SEMCONV_STABILITY_OPT_IN=database`). This is fine for the synthetic quotes
+here. With real customer data it would put personal data into the wide-event store.
+
 Every switch restarts the pod, so the in-memory database starts empty again, and
 the `quote-api` port-forward dies with the old pod. Restart `05-port-forward.sh`
 after each switch.
